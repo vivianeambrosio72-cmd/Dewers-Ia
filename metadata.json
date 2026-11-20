@@ -1,0 +1,6 @@
+{
+  "name": "Dewers IA",
+  "description": "Estúdio inteligente de legendas automáticas palavra por palavra e transições para vídeos curtos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,163 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Perfil privado do usuário autenticado no Dewers IA.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do Firebase Auth do usuário."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Nome de exibição do usuário."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "Endereço de e-mail verificado do usuário (quando autenticado com Google)."
+        },
+        "phoneNumber": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "description": "Número de telefone verificado via SMS (quando autenticado por celular)."
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "URL da foto de perfil."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "admin"],
+          "description": "Papel do usuário; usuários de telefone são sempre user e apenas a conta admin via Google recebe admin."
+        },
+        "authProvider": {
+          "type": "string",
+          "enum": ["google", "phone"],
+          "description": "Método de autenticação utilizado (google ou phone)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp de criação do perfil."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp da última atualização."
+        }
+      },
+      "required": ["uid", "displayName", "createdAt", "updatedAt"]
+    },
+    "SubtitleProject": {
+      "title": "SubtitleProject",
+      "description": "Projeto de legendagem e transições automáticas salvo pelo usuário.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Identificador do projeto."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do proprietário do projeto."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Título do projeto ou nome do vídeo."
+        },
+        "videoFileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Nome original do arquivo de vídeo."
+        },
+        "duration": {
+          "type": "number",
+          "description": "Duração do vídeo em segundos."
+        },
+        "language": {
+          "type": "string",
+          "enum": ["pt-BR", "en-US", "es-ES", "fr-FR"],
+          "description": "Código do idioma selecionado para transcrição."
+        },
+        "styleConfig": {
+          "type": "object",
+          "description": "Configurações visuais dos 4 estilos profissionais (preset, fonte, escala 50-150%, cores, posição vertical 5-95%)."
+        },
+        "transitionConfig": {
+          "type": "object",
+          "description": "Configurações de detecção de pausas, biblioteca de transições e duração do efeito."
+        },
+        "transitionPoints": {
+          "type": "array",
+          "description": "Lista de pontos de transição automáticos ou manuais na timeline."
+        },
+        "segments": {
+          "type": "array",
+          "description": "Lista de segmentos de legenda com palavras e tempos."
+        },
+        "wordCount": {
+          "type": "number",
+          "description": "Contagem total de palavras transcritas."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp de criação do projeto."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp da última modificação."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "title",
+        "videoFileName",
+        "duration",
+        "language",
+        "styleConfig",
+        "transitionConfig",
+        "segments",
+        "wordCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Armazena dados de perfil privado de cada usuário autenticado, acessível apenas pelo próprio dono."
+    },
+    "/projects/{projectId}": {
+      "schema": {
+        "$ref": "#/entities/SubtitleProject"
+      },
+      "description": "Armazena projetos de legendas, estilos e configurações de transição pertencentes a um usuário específico."
+    }
+  }
+}

@@ -1,0 +1,179 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && (
+        request.auth.token.email_verified == true
+        || ('phone_number' in request.auth.token && request.auth.token.phone_number != null)
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdminCaller() {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'vivianeambrosio72@gmail.com'
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'phoneNumber', 'photoURL', 'role', 'authProvider', 'createdAt', 'updatedAt'])
+        && data.uid is string
+        && data.uid == request.auth.uid
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 120
+        && (!('email' in data) || data.email == null || (data.email is string && data.email.size() >= 3 && data.email.size() <= 254))
+        && (!('phoneNumber' in data) || data.phoneNumber == null || (data.phoneNumber is string && data.phoneNumber.size() >= 4 && data.phoneNumber.size() <= 32))
+        && (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 1000))
+        && (!('role' in data) || data.role == 'user' || (data.role == 'admin' && isAdminCaller()))
+        && (!('authProvider' in data) || (data.authProvider in ['google', 'phone'] && (data.authProvider == 'google' || !('role' in data) || data.role == 'user')))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStyleConfig(cfg) {
+      return cfg is map
+        && cfg.keys().hasAll(['preset', 'fontFamily', 'fontScale', 'textColor', 'highlightColor', 'verticalPosition'])
+        && cfg.keys().hasOnly(['preset', 'fontFamily', 'fontScale', 'textColor', 'highlightColor', 'verticalPosition'])
+        && cfg.preset in ['viral_impacto', 'neon_noturno', 'elegante_pregacao', 'caixa_destaque']
+        && cfg.fontFamily is string && cfg.fontFamily.size() >= 1 && cfg.fontFamily.size() <= 80
+        && cfg.fontScale is number && cfg.fontScale >= 50 && cfg.fontScale <= 150
+        && cfg.textColor is string && cfg.textColor.size() >= 4 && cfg.textColor.size() <= 24
+        && cfg.highlightColor is string && cfg.highlightColor.size() >= 4 && cfg.highlightColor.size() <= 24
+        && cfg.verticalPosition is number && cfg.verticalPosition >= 5 && cfg.verticalPosition <= 95;
+    }
+
+    function isValidTransitionConfig(cfg) {
+      return cfg is map
+        && cfg.keys().hasAll(['enabled', 'mode', 'type', 'intensity', 'pauseThreshold', 'duration'])
+        && cfg.keys().hasOnly(['enabled', 'mode', 'type', 'intensity', 'pauseThreshold', 'duration'])
+        && cfg.enabled is bool
+        && cfg.mode in ['transition', 'cut']
+        && cfg.type in [
+          'fade', 'zoom', 'slide', 'glitch',
+          'whip', 'cube_zoom', 'flip', 'heartbeat',
+          'flash', 'spin', 'shake', 'blur', 'wipe', 'bounce'
+        ]
+        && cfg.intensity in ['low', 'medium', 'high']
+        && cfg.pauseThreshold is number && cfg.pauseThreshold >= 0.3 && cfg.pauseThreshold <= 3.0
+        && cfg.duration is number && cfg.duration >= 0.15 && cfg.duration <= 2.0;
+    }
+
+    function isValidProject(data, projectId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'title', 'videoFileName', 'duration',
+          'language', 'styleConfig', 'transitionConfig', 'segments',
+          'wordCount', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'title', 'videoFileName', 'duration',
+          'language', 'styleConfig', 'transitionConfig', 'transitionPoints', 'segments',
+          'wordCount', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == projectId && isValidId(data.id)
+        && data.ownerId is string && data.ownerId == request.auth.uid && isValidId(data.ownerId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.videoFileName is string && data.videoFileName.size() >= 1 && data.videoFileName.size() <= 200
+        && data.duration is number && data.duration >= 0 && data.duration <= 3600
+        && data.language in ['pt-BR', 'en-US', 'es-ES', 'fr-FR']
+        && isValidStyleConfig(data.styleConfig)
+        && isValidTransitionConfig(data.transitionConfig)
+        && (!('transitionPoints' in data) || (
+          data.transitionPoints is list
+          && data.transitionPoints.size() <= 120
+          && (data.transitionPoints.size() == 0 || (
+            data.transitionPoints[0] is map
+            && data.transitionPoints[0].id is string
+            && data.transitionPoints[0].time is number
+          ))
+        ))
+        && data.segments is list
+        && data.segments.size() <= 300
+        && (data.segments.size() == 0 || (data.segments[0] is map && data.segments[0].text is string && data.segments[0].text.size() <= 500))
+        && data.wordCount is number && data.wordCount >= 0 && data.wordCount <= 10000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // Private User Profiles (PII Isolated)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isVerified()
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isVerified()
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'phoneNumber', 'photoURL', 'role', 'authProvider', 'updatedAt']);
+      allow delete: if isValidId(userId) && isOwner(userId);
+    }
+
+    // Saved Subtitle Projects
+    match /projects/{projectId} {
+      allow get: if isValidId(projectId) && isSignedIn() && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isValidId(projectId)
+        && isVerified()
+        && isValidProject(incoming(), projectId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(projectId)
+        && isVerified()
+        && existing().ownerId == request.auth.uid
+        && isValidProject(incoming(), projectId)
+        && incoming().id == existing().id
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'videoFileName', 'duration', 'language', 'styleConfig', 'transitionConfig', 'transitionPoints', 'segments', 'wordCount', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['styleConfig', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['transitionConfig', 'transitionPoints', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['segments', 'wordCount', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'updatedAt'])
+        );
+      allow delete: if isValidId(projectId) && isVerified() && existing().ownerId == request.auth.uid;
+    }
+  }
+}
