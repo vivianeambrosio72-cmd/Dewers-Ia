@@ -24,7 +24,7 @@ export default defineConfig(() => {
           id: '/',
           name: 'DEWES IA',
           short_name: 'DEWES IA',
-          description: 'Legendas e transições automáticas com IA',
+          description: 'Legendas automáticas com IA',
           start_url: '/',
           scope: '/',
           display: 'standalone',
@@ -55,6 +55,7 @@ export default defineConfig(() => {
         },
         workbox: {
           cleanupOutdatedCaches: true,
+          clientsClaim: true,
           disableDevLogs: true,
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
@@ -62,15 +63,15 @@ export default defineConfig(() => {
           runtimeCaching: [
             // Never cache Gemini API calls, auth callbacks, or .wasm files
             {
-              urlPattern: /^\/api\/.*/i,
+              urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
               handler: 'NetworkOnly',
             },
             {
-              urlPattern: /^\/__\/.*/i,
+              urlPattern: ({ url }) => url.pathname.startsWith('/__/'),
               handler: 'NetworkOnly',
             },
             {
-              urlPattern: /\.wasm(\?.*)?$/i,
+              urlPattern: ({ url }) => /\.wasm$/i.test(url.pathname),
               handler: 'NetworkOnly',
             },
             {

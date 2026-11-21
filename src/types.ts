@@ -4,7 +4,11 @@ export type SubtitlePreset =
   | 'viral_impacto'
   | 'neon_noturno'
   | 'elegante_pregacao'
-  | 'caixa_destaque';
+  | 'caixa_destaque'
+  | 'mrbeast_3d'
+  | 'cyber_glitch'
+  | 'fogo_turbo'
+  | 'cinema_blur';
 
 export type TransitionType =
   | 'fade'
@@ -25,15 +29,6 @@ export type TransitionType =
 export type TransitionMode = 'transition' | 'cut';
 
 export type TransitionIntensity = 'low' | 'medium' | 'high';
-
-export type TransitionCategory = 'classic' | 'dynamic' | '3d' | 'impact';
-
-export interface TransitionDefinition {
-  value: TransitionType;
-  label: string;
-  desc: string;
-  category: TransitionCategory;
-}
 
 export interface WordTiming {
   id: string;
@@ -70,25 +65,16 @@ export interface TransitionConfig {
   duration: number;
 }
 
-export type WizardStep = 1 | 2 | 3 | 'export';
+export type WizardStep = 1 | 2 | 'export';
 
 export interface TransitionPoint {
   id: string;
-  time: number; // segundos no vídeo onde a transição ocorre
+  time: number;
   type: TransitionType;
-  duration: number; // segundos
+  duration: number;
   intensity: TransitionIntensity;
   source: 'auto' | 'manual';
   pauseDuration?: number;
-}
-
-export interface DetectedPause {
-  id: string;
-  start: number;
-  end: number;
-  duration: number;
-  beforeSegmentId: string;
-  afterSegmentId: string;
 }
 
 export interface SavedProject {
@@ -99,7 +85,7 @@ export interface SavedProject {
   duration: number;
   language: SupportedLanguage;
   styleConfig: StyleConfig;
-  transitionConfig: TransitionConfig;
+  transitionConfig?: TransitionConfig;
   transitionPoints?: TransitionPoint[];
   segments: SubtitleSegment[];
   wordCount: number;
@@ -114,26 +100,12 @@ export const LANGUAGE_OPTIONS: Array<{ value: SupportedLanguage; label: string }
   { value: 'fr-FR', label: 'Francês · fr-FR' },
 ];
 
-export const TRANSITION_LIBRARY: TransitionDefinition[] = [
-  { value: 'fade', label: 'Fade', desc: 'Suavização progressiva', category: 'classic' },
-  { value: 'zoom', label: 'Zoom', desc: 'Aproximação de impacto', category: 'dynamic' },
-  { value: 'slide', label: 'Deslizar', desc: 'Movimento lateral fluido', category: 'classic' },
-  { value: 'glitch', label: 'Glitch', desc: 'Pulso digital cromático', category: 'impact' },
-  { value: 'whip', label: 'Whip Pan', desc: 'Chicote horizontal veloz', category: 'dynamic' },
-  { value: 'cube_zoom', label: 'Cube Zoom', desc: 'Rotação 3D com zoom', category: '3d' },
-  { value: 'flip', label: 'Flip 3D', desc: 'Giro horizontal em eixo Y', category: '3d' },
-  { value: 'heartbeat', label: 'Heartbeat', desc: 'Duplo pulso rítmico', category: 'impact' },
-  { value: 'flash', label: 'Flash', desc: 'Clarão branco de corte', category: 'impact' },
-  { value: 'spin', label: 'Spin', desc: 'Rotação 360° dinâmica', category: 'dynamic' },
-  { value: 'shake', label: 'Camera Shake', desc: 'Vibração rápida de câmera', category: 'impact' },
-  { value: 'blur', label: 'Blur Dissolve', desc: 'Desfoque óptico suave', category: 'classic' },
-  { value: 'wipe', label: 'Wipe', desc: 'Cortina de revelação limpa', category: 'classic' },
-  { value: 'bounce', label: 'Bounce', desc: 'Salto elástico de entrada', category: 'dynamic' },
-];
-
 export const FONT_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'Anton', label: 'Anton' },
-  { value: 'Montserrat', label: 'Montserrat ExtraBold' },
+  { value: 'Montserrat', label: 'Montserrat Black' },
+  { value: 'Bebas Neue', label: 'Bebas Neue' },
+  { value: 'Oswald', label: 'Oswald Bold' },
+  { value: 'Plus Jakarta Sans', label: 'Plus Jakarta Sans' },
   { value: 'Poppins', label: 'Poppins Bold' },
   { value: 'Playfair Display', label: 'Playfair Display' },
   { value: 'Inter', label: 'Inter ExtraBold' },
@@ -198,6 +170,58 @@ export const PRESET_DEFINITIONS: Record<
       textColor: '#FFFFFF',
       highlightColor: '#FF4D8D',
       verticalPosition: 84,
+    },
+  },
+  mrbeast_3d: {
+    name: '3D BLOCKBUSTER',
+    subtitle: 'Montserrat Black itálico · Extrusão 3D · Verde pop',
+    baseFontSize: 40,
+    style: {
+      preset: 'mrbeast_3d',
+      fontFamily: 'Montserrat',
+      fontScale: 100,
+      textColor: '#FFFFFF',
+      highlightColor: '#22FF66',
+      verticalPosition: 74,
+    },
+  },
+  cyber_glitch: {
+    name: 'CYBER GLITCH',
+    subtitle: 'Oswald · Aberração RGB ciano/magenta · Tarja inclinada',
+    baseFontSize: 38,
+    style: {
+      preset: 'cyber_glitch',
+      fontFamily: 'Oswald',
+      fontScale: 100,
+      textColor: '#FFFFFF',
+      highlightColor: '#00F0FF',
+      verticalPosition: 68,
+    },
+  },
+  fogo_turbo: {
+    name: 'GRADIENTE FOGO',
+    subtitle: 'Bebas Neue · Metal incandescente · Brilho laranja',
+    baseFontSize: 46,
+    style: {
+      preset: 'fogo_turbo',
+      fontFamily: 'Bebas Neue',
+      fontScale: 100,
+      textColor: '#F8FAFC',
+      highlightColor: '#FF7A00',
+      verticalPosition: 72,
+    },
+  },
+  cinema_blur: {
+    name: 'CINEMA FOCO',
+    subtitle: 'Plus Jakarta Sans · Desfoque focal · Destaque dourado',
+    baseFontSize: 33,
+    style: {
+      preset: 'cinema_blur',
+      fontFamily: 'Plus Jakarta Sans',
+      fontScale: 100,
+      textColor: '#F1F5F9',
+      highlightColor: '#FFB800',
+      verticalPosition: 78,
     },
   },
 };

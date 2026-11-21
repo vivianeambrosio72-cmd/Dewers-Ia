@@ -12,7 +12,14 @@ interface StylePanelProps {
 }
 
 const TEXT_SWATCHES = ['#FFFFFF', '#FFF8E7', '#F8FAFC', '#FFE600', '#00F0FF'];
-const HIGHLIGHT_SWATCHES = ['#FFE600', '#FF2BD6', '#D4AF37', '#FF4D8D', '#00F0FF'];
+const HIGHLIGHT_SWATCHES = [
+  '#FFE600',
+  '#22FF66',
+  '#00F0FF',
+  '#FF7A00',
+  '#FF2BD6',
+  '#FFB800',
+];
 
 function StyleThumbnail({ presetKey }: { presetKey: SubtitlePreset }) {
   if (presetKey === 'viral_impacto') {
@@ -90,28 +97,139 @@ function StyleThumbnail({ presetKey }: { presetKey: SubtitlePreset }) {
     );
   }
 
-  // caixa_destaque
+  if (presetKey === 'caixa_destaque') {
+    return (
+      <div className="h-14 rounded-md bg-[#090B10] border border-white/10 flex items-center justify-center px-3 overflow-hidden">
+        <div
+          className="flex items-center gap-1.5 text-xs font-extrabold text-white"
+          style={{
+            fontFamily: '"Inter", sans-serif',
+            backgroundColor: 'rgba(0,0,0,0.65)',
+            borderRadius: '10px',
+            padding: '6px 10px',
+          }}
+        >
+          <span>Seu</span>
+          <span
+            className="px-2 py-0.5 rounded-full text-white"
+            style={{
+              background: 'linear-gradient(90deg, #8A2BE2 0%, #FF4D8D 100%)',
+            }}
+          >
+            vídeo
+          </span>
+          <span>aqui</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (presetKey === 'mrbeast_3d') {
+    return (
+      <div className="h-14 rounded-md bg-[#090B10] border border-white/10 flex items-center justify-center px-3 overflow-hidden">
+        <span
+          className="text-sm uppercase"
+          style={{
+            fontFamily: '"Montserrat", sans-serif',
+            fontWeight: 900,
+            color: '#FFFFFF',
+            transform: 'skewX(-7deg)',
+            WebkitTextStroke: '3.5px #000000',
+            paintOrder: 'stroke fill',
+            textShadow: '0 1.5px 0 #000, 0 3px 0 #000, 0 4.5px 0 #000',
+          }}
+        >
+          NÍVEL{' '}
+          <span style={{ color: '#22FF66', display: 'inline-block', transform: 'scale(1.12)' }}>
+            ÉPICO
+          </span>
+        </span>
+      </div>
+    );
+  }
+
+  if (presetKey === 'cyber_glitch') {
+    return (
+      <div className="h-14 rounded-md bg-[#090B10] border border-white/10 flex items-center justify-center gap-1.5 px-3 overflow-hidden">
+        <span
+          className="text-sm font-bold uppercase tracking-wider"
+          style={{
+            fontFamily: '"Oswald", sans-serif',
+            color: '#FFFFFF',
+            textShadow: '-2px 0 #00F0FF, 2px 0 #FF0055',
+          }}
+        >
+          MODO
+        </span>
+        <span
+          className="text-sm font-bold uppercase tracking-wider px-2 py-0.5"
+          style={{
+            fontFamily: '"Oswald", sans-serif',
+            backgroundColor: '#00F0FF',
+            color: '#05070B',
+            transform: 'skewX(-10deg)',
+            boxShadow: '0 0 12px rgba(0, 240, 255, 0.7)',
+          }}
+        >
+          CYBER
+        </span>
+      </div>
+    );
+  }
+
+  if (presetKey === 'fogo_turbo') {
+    return (
+      <div className="h-14 rounded-md bg-[#090B10] border border-white/10 flex items-center justify-center gap-1.5 px-3 overflow-hidden">
+        <span
+          className="text-lg uppercase tracking-wide"
+          style={{
+            fontFamily: '"Bebas Neue", sans-serif',
+            color: '#F8FAFC',
+            WebkitTextStroke: '2.5px #000000',
+            paintOrder: 'stroke fill',
+            textShadow: '0 2px 0 #000',
+          }}
+        >
+          ENERGIA
+        </span>
+        <span
+          className="text-lg uppercase tracking-wide"
+          style={{
+            fontFamily: '"Bebas Neue", sans-serif',
+            background: 'linear-gradient(180deg, #FFFFFF 0%, #FFE600 45%, #FF7A00 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            filter:
+              'drop-shadow(0 1.5px 0 #000) drop-shadow(0 -1px 0 #000) drop-shadow(1px 0 0 #000) drop-shadow(-1px 0 0 #000) drop-shadow(0 0 10px rgba(255, 122, 0, 0.85))',
+          }}
+        >
+          MÁXIMA
+        </span>
+      </div>
+    );
+  }
+
+  // cinema_blur
   return (
     <div className="h-14 rounded-md bg-[#090B10] border border-white/10 flex items-center justify-center px-3 overflow-hidden">
       <div
-        className="flex items-center gap-1.5 text-xs font-extrabold text-white"
+        className="flex items-center gap-1.5 text-xs font-extrabold px-3 py-1 rounded-lg border border-white/10"
         style={{
-          fontFamily: '"Inter", sans-serif',
-          backgroundColor: 'rgba(0,0,0,0.65)',
-          borderRadius: '10px',
-          padding: '6px 10px',
+          fontFamily: '"Plus Jakarta Sans", sans-serif',
+          backgroundColor: 'rgba(15, 23, 42, 0.72)',
         }}
       >
-        <span>Seu</span>
+        <span className="text-slate-200 opacity-45 blur-[0.7px]">Foco</span>
         <span
-          className="px-2 py-0.5 rounded-full text-white"
+          className="scale-105"
           style={{
-            background: 'linear-gradient(90deg, #8A2BE2 0%, #FF4D8D 100%)',
+            color: '#FFB800',
+            textShadow: '0 0 10px rgba(255, 184, 0, 0.65)',
           }}
         >
-          vídeo
+          total
         </span>
-        <span>aqui</span>
+        <span className="text-slate-200 opacity-45 blur-[0.7px]">agora</span>
       </div>
     </div>
   );
@@ -126,14 +244,14 @@ export function StylePanel({ styleConfig, onChange }: StylePanelProps) {
 
   return (
     <div className="flex flex-col gap-5">
-      {/* 4 Professional Subtitle Styles with Clickable Thumbnails */}
+      {/* 8 Professional Subtitle Styles with Clickable Thumbnails */}
       <div className="p-4 rounded-xl bg-[#11141D] border border-white/10 space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-100">
             Estilos profissionais de legenda
           </h3>
           <span className="text-xs text-slate-400">
-            2 a 4 palavras sincronizadas por vez
+            8 estilos · 2 a 4 palavras por vez
           </span>
         </div>
 

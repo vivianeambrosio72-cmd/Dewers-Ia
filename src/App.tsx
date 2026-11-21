@@ -30,15 +30,10 @@ import {
   type StyleConfig,
   type SubtitleSegment,
   type SupportedLanguage,
-  type TransitionConfig,
-  type TransitionPoint,
-  type TransitionType,
   type WizardStep,
 } from './types';
 import {
-  buildAutoTransitionPoints,
   createSegmentAtTime,
-  detectLongPauses,
   editSingleWordInSegment,
   findAndReplaceInSegments,
   generateSrtContent,
@@ -55,7 +50,6 @@ import { WizardProgressBar } from './components/WizardProgressBar';
 import { VideoPlayerShell } from './components/VideoPlayerShell';
 import { SubtitleEditorPanel } from './components/SubtitleEditorPanel';
 import { StylePanel } from './components/StylePanel';
-import { Step3TransitionsPanel } from './components/Step3TransitionsPanel';
 import { ExportStage } from './components/ExportStage';
 import { ProjectsPanel } from './components/ProjectsPanel';
 import { LoginScreen } from './components/LoginScreen';
@@ -115,7 +109,6 @@ export default function App() {
   const [view, setView] = useState<WorkspaceView>('wizard');
   const [step, setStep] = useState<WizardStep>(1);
   const [maxReachedStep, setMaxReachedStep] = useState<number>(1);
-  const [subtitlesDirtySinceStep3, setSubtitlesDirtySinceStep3] = useState(false);
 
   // Video & Player
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -154,21 +147,6 @@ export default function App() {
     return { ...PRESET_DEFINITIONS.viral_impacto.style };
   });
 
-  // Step 3: Transitions
-  const [transitionConfig, setTransitionConfig] = useState<TransitionConfig>({
-    enabled: true,
-    mode: 'transition',
-    type: 'zoom',
-    intensity: 'medium',
-    pauseThreshold: 0.7,
-    duration: 0.45,
-  });
-  const [transitionPoints, setTransitionPoints] = useState<TransitionPoint[]>([]);
-  const [selectedTransitionId, setSelectedTransitionId] = useState<string | null>(null);
-  const [previewTransitionTrigger, setPreviewTransitionTrigger] = useState<{
-    type: TransitionType;
-    nonce: number;
-  } | null>(null);
 
   // Export
   const [isExporting, setIsExporting] = useState(false);
@@ -278,10 +256,6 @@ export default function App() {
     subtitlesReviewed,
   ]);
 
-  const pauses = useMemo(
-    () => detectLongPauses(segments, transitionConfig.pauseThreshold),
-    [segments, transitionConfig.pauseThreshold],
-  );
 
   const handleSelectFile = useCallback(
     (file: File) => {
@@ -322,8 +296,6 @@ export default function App() {
       setIsPlaying(false);
       setUndoStack([]);
       setRedoStack([]);
-      setTransitionPoints([]);
-      setSubtitlesDirtySinceStep3(false);
 
       if (
         savedDraft &&
@@ -354,26 +326,67 @@ export default function App() {
     [activeProjectId],
   );
 
-  const parseServerError = (status: number, responseText: string): string => {
+  const extractHtmlTitleHint = (htmlText: string): string => {
+    const titleMatch = htmlText.match(/<title[^>]*>([^<]{1,80})<\/title>/i);
+    if (titleMatch && titleMatch[1]) {
+      return titleMatch[1].replace(/\s+/g, ' ').trim();
+    }
+    return '';
+  };
+
+  const parseServerError = (
+    status: number,
+    responseText: string,
+    context?: string,
+  ): string => {
+    const trimmed = (responseText || '').trim();
     try {
-      const data = JSON.parse(responseText || '{}');
+      const data = JSON.parse(trimmed || '{}');
       if (typeof data?.error === 'string' && data.error.trim()) {
         return data.error;
       }
     } catch {
       // non-JSON response (e.g. proxy HTML error)
     }
+
+    console.error('[DEWES Transcribe] Resposta inesperada do servidor:', {
+      status,
+      context,
+      preview: trimmed.slice(0, 240),
+    });
+
     if (status === 413) {
       return 'O arquivo ultrapassou o limite aceito pelo servidor neste envio. Tente um vídeo menor.';
     }
     if (status === 502 || status === 503 || status === 504) {
       return `O servidor de transcrição demorou para responder (HTTP ${status}). Tente novamente em instantes.`;
     }
+    if (/^<!doctype|^<html/i.test(trimmed)) {
+      const titleHint = extractHtmlTitleHint(trimmed);
+      const hintSuffix = titleHint ? ` [${titleHint}]` : '';
+      const ctxSuffix = context ? ` (${context})` : '';
+      return `O servidor retornou uma página HTML inesperada em vez dos dados da transcrição (HTTP ${status})${hintSuffix}${ctxSuffix}. Recarregue a página e tente novamente.`;
+    }
+    if (!trimmed && status > 0) {
+      return `O servidor encerrou a conexão sem enviar dados (HTTP ${status}). Tente novamente em instantes.`;
+    }
     if (status > 0) {
       return `Falha na comunicação com o servidor de transcrição (HTTP ${status}).`;
     }
     return 'Falha na comunicação com o servidor de transcrição. Verifique sua conexão e tente novamente.';
   };
+
+  const fileToBase64 = (file: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = typeof reader.result === 'string' ? reader.result : '';
+        const commaIdx = res.indexOf(',');
+        resolve(commaIdx >= 0 ? res.slice(commaIdx + 1) : res);
+      };
+      reader.onerror = () => reject(new Error('Falha ao ler áudio no navegador.'));
+      reader.readAsDataURL(file);
+    });
 
   const runGeminiTranscription = useCallback(
     async (targetLang: SupportedLanguage) => {
@@ -390,8 +403,43 @@ export default function App() {
       setAlert(null);
       setIsTranscribing(true);
       setTranscribeProgress(5);
-      setTranscribeStage('Preparando áudio do vídeo...');
+      setTranscribeStage('Conectando ao servidor de transcrição...');
 
+      // Verify /api/health first so proxy/auth/static-host issues are caught immediately
+      try {
+        const healthRes = await fetch('/api/health', {
+          method: 'GET',
+          cache: 'no-store',
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+        });
+        const healthText = await healthRes.text();
+        let healthOk = false;
+        try {
+          const parsedHealth = JSON.parse(healthText || '{}');
+          healthOk = healthRes.ok && parsedHealth?.status === 'ok';
+        } catch {
+          healthOk = false;
+        }
+        if (!healthOk) {
+          throw new Error(
+            parseServerError(healthRes.status, healthText, 'api-health'),
+          );
+        }
+      } catch (healthErr) {
+        setIsTranscribing(false);
+        setTranscribeProgress(0);
+        setAlert({
+          type: 'error',
+          message:
+            healthErr instanceof Error
+              ? healthErr.message
+              : 'Não foi possível conectar ao servidor de transcrição.',
+        });
+        return;
+      }
+
+      setTranscribeStage('Preparando áudio do vídeo...');
       const prepared = await prepareAudioForTranscription(videoFile);
       if (prepared.isSilent) {
         setIsTranscribing(false);
@@ -406,8 +454,53 @@ export default function App() {
 
       const uploadTargetFile = prepared.audioFile ?? videoFile;
       const CHUNK_THRESHOLD_BYTES = 16 * 1024 * 1024; // 16 MB
+      const JSON_FALLBACK_MAX_BYTES = 12 * 1024 * 1024; // 12 MB raw -> ~16 MB base64
       const CHUNK_SIZE_BYTES = 4 * 1024 * 1024; // 4 MB chunks (safe under Cloud Run 32 MB limit)
       let aiTicker: number | undefined;
+
+      const sendViaJsonFallback = async (): Promise<{
+        segments: SubtitleSegment[];
+        detectedLanguage: string;
+      }> => {
+        setTranscribeStage('Reenviando áudio em formato compatível...');
+        setTranscribeProgress(55);
+        const audioBase64 = await fileToBase64(uploadTargetFile);
+        const res = await fetch('/api/transcribe-json', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            audioBase64,
+            fileName: uploadTargetFile.name,
+            mimeType: uploadTargetFile.type || 'audio/wav',
+            language: targetLang,
+            customDictionary: customDictionary.trim(),
+          }),
+        });
+        const text = await res.text();
+        let data: {
+          segments?: SubtitleSegment[];
+          detectedLanguage?: string;
+          error?: string;
+        } = {};
+        try {
+          data = JSON.parse(text || '{}');
+        } catch {
+          throw new Error(parseServerError(res.status, text, 'transcribe-json'));
+        }
+        if (!res.ok || !Array.isArray(data.segments)) {
+          throw new Error(
+            data.error || parseServerError(res.status, text, 'transcribe-json'),
+          );
+        }
+        return {
+          segments: data.segments,
+          detectedLanguage: data.detectedLanguage || targetLang,
+        };
+      };
 
       try {
         let result: {
@@ -423,76 +516,124 @@ export default function App() {
             formData.append('customDictionary', customDictionary.trim());
           }
 
-          result = await new Promise<{
-            segments: SubtitleSegment[];
-            detectedLanguage: string;
-          }>((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/transcribe');
-            xhr.timeout = 240000;
+          try {
+            result = await new Promise<{
+              segments: SubtitleSegment[];
+              detectedLanguage: string;
+            }>((resolve, reject) => {
+              const xhr = new XMLHttpRequest();
+              xhr.open('POST', '/api/transcribe');
+              xhr.withCredentials = true;
+              xhr.setRequestHeader('Accept', 'application/json');
+              xhr.timeout = 240000;
 
-            xhr.upload.onprogress = (ev) => {
-              if (ev.lengthComputable) {
-                const pct = Math.min(45, Math.round((ev.loaded / ev.total) * 45));
-                setTranscribeProgress(Math.max(10, pct));
-                setTranscribeStage(
-                  prepared.audioFile
-                    ? 'Enviando áudio otimizado...'
-                    : 'Enviando vídeo para transcrição...',
-                );
-              }
-            };
+              xhr.upload.onprogress = (ev) => {
+                if (ev.lengthComputable) {
+                  const pct = Math.min(45, Math.round((ev.loaded / ev.total) * 45));
+                  setTranscribeProgress(Math.max(10, pct));
+                  setTranscribeStage(
+                    prepared.audioFile
+                      ? 'Enviando áudio otimizado...'
+                      : 'Enviando vídeo para transcrição...',
+                  );
+                }
+              };
 
-            xhr.upload.onload = () => {
-              setTranscribeProgress(50);
-              setTranscribeStage('Transcrevendo áudio com Gemini...');
-              aiTicker = window.setInterval(() => {
-                setTranscribeProgress((prev) => (prev < 92 ? prev + 2 : prev));
-              }, 700);
-            };
+              xhr.upload.onload = () => {
+                setTranscribeProgress(50);
+                setTranscribeStage('Transcrevendo áudio com Gemini...');
+                aiTicker = window.setInterval(() => {
+                  setTranscribeProgress((prev) => (prev < 92 ? prev + 2 : prev));
+                }, 700);
+              };
 
-            xhr.onload = () => {
-              if (aiTicker) clearInterval(aiTicker);
-              try {
-                const data = JSON.parse(xhr.responseText || '{}');
+              xhr.onload = () => {
+                if (aiTicker) clearInterval(aiTicker);
+                const contentType = xhr.getResponseHeader('content-type') || '';
                 if (
-                  xhr.status >= 200 &&
-                  xhr.status < 300 &&
-                  Array.isArray(data.segments)
+                  xhr.responseURL &&
+                  !xhr.responseURL.includes('/api/transcribe')
                 ) {
-                  resolve(data);
-                } else {
                   reject(
                     new Error(
-                      data.error || parseServerError(xhr.status, xhr.responseText),
+                      parseServerError(
+                        xhr.status,
+                        xhr.responseText,
+                        `redirected:${xhr.responseURL}`,
+                      ),
+                    ),
+                  );
+                  return;
+                }
+                try {
+                  const data = JSON.parse(xhr.responseText || '{}');
+                  if (
+                    xhr.status >= 200 &&
+                    xhr.status < 300 &&
+                    Array.isArray(data.segments)
+                  ) {
+                    resolve(data);
+                  } else {
+                    reject(
+                      new Error(
+                        data.error ||
+                          parseServerError(
+                            xhr.status,
+                            xhr.responseText,
+                            `ct=${contentType}`,
+                          ),
+                      ),
+                    );
+                  }
+                } catch {
+                  reject(
+                    new Error(
+                      parseServerError(
+                        xhr.status,
+                        xhr.responseText,
+                        `ct=${contentType}`,
+                      ),
                     ),
                   );
                 }
-              } catch {
-                reject(new Error(parseServerError(xhr.status, xhr.responseText)));
-              }
-            };
+              };
 
-            xhr.ontimeout = () => {
-              if (aiTicker) clearInterval(aiTicker);
-              reject(
-                new Error(
-                  'O tempo de transcrição excedeu o limite. Tente um vídeo mais curto ou verifique sua conexão.',
-                ),
-              );
-            };
+              xhr.ontimeout = () => {
+                if (aiTicker) clearInterval(aiTicker);
+                reject(
+                  new Error(
+                    'O tempo de transcrição excedeu o limite. Tente um vídeo mais curto ou verifique sua conexão.',
+                  ),
+                );
+              };
 
-            xhr.onerror = () => {
-              if (aiTicker) clearInterval(aiTicker);
-              reject(
-                new Error(
-                  'Erro de rede ao enviar o vídeo. Verifique sua conexão e tente novamente.',
-                ),
-              );
-            };
+              xhr.onerror = () => {
+                if (aiTicker) clearInterval(aiTicker);
+                reject(
+                  new Error(
+                    'Erro de rede ao enviar o vídeo. Verifique sua conexão e tente novamente.',
+                  ),
+                );
+              };
 
-            xhr.send(formData);
-          });
+              xhr.send(formData);
+            });
+          } catch (multipartErr) {
+            const msg =
+              multipartErr instanceof Error
+                ? multipartErr.message
+                : String(multipartErr);
+            const looksLikeHtmlOrProxyIssue =
+              msg.includes('HTML') || msg.includes('sem enviar dados');
+            if (
+              looksLikeHtmlOrProxyIssue &&
+              uploadTargetFile.size <= JSON_FALLBACK_MAX_BYTES
+            ) {
+              result = await sendViaJsonFallback();
+            } else {
+              throw multipartErr;
+            }
+          }
         } else {
           // Chunked upload for large videos where browser audio extraction wasn't used
           const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -511,11 +652,15 @@ export default function App() {
             setTranscribeStage(`Enviando vídeo (${i + 1}/${totalChunks})...`);
             const chunkRes = await fetch('/api/transcribe/chunk', {
               method: 'POST',
+              credentials: 'include',
+              headers: { Accept: 'application/json' },
               body: chunkForm,
             });
             const chunkText = await chunkRes.text();
             if (!chunkRes.ok) {
-              throw new Error(parseServerError(chunkRes.status, chunkText));
+              throw new Error(
+                parseServerError(chunkRes.status, chunkText, 'chunk'),
+              );
             }
             setTranscribeProgress(
               Math.max(10, Math.round(((i + 1) / totalChunks) * 45)),
@@ -530,7 +675,11 @@ export default function App() {
 
           const completeRes = await fetch('/api/transcribe/complete', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
             body: JSON.stringify({
               uploadId,
               totalChunks,
@@ -551,12 +700,15 @@ export default function App() {
           try {
             data = JSON.parse(completeText || '{}');
           } catch {
-            throw new Error(parseServerError(completeRes.status, completeText));
+            throw new Error(
+              parseServerError(completeRes.status, completeText, 'complete'),
+            );
           }
 
           if (!completeRes.ok || !Array.isArray(data.segments)) {
             throw new Error(
-              data.error || parseServerError(completeRes.status, completeText),
+              data.error ||
+                parseServerError(completeRes.status, completeText, 'complete-json'),
             );
           }
 
@@ -573,9 +725,6 @@ export default function App() {
         setSegments(result.segments);
         setSubtitlesReviewed(false);
         setTranscribedKey(`${videoFile.name}_${videoFile.size}_${targetLang}`);
-        if (maxReachedStep >= 3) {
-          setSubtitlesDirtySinceStep3(true);
-        }
         const reviewCount = result.segments.reduce(
           (acc, s) => acc + s.words.filter((w) => w.needsReview).length,
           0,
@@ -598,7 +747,7 @@ export default function App() {
         }, 300);
       }
     },
-    [videoFile, maxReachedStep, customDictionary],
+    [videoFile, customDictionary],
   );
 
   // Step 1 -> Step 2 (Auto-transcribe upon entering Step 2 if needed)
@@ -615,56 +764,16 @@ export default function App() {
     }
   };
 
-  // Step 2 -> Step 3 (Requires subtitlesReviewed confirmation; recalculates transitions if dirty)
-  const handleGoToStep3 = () => {
-    if (segments.length === 0 || !subtitlesReviewed) return;
-
-    if (transitionPoints.length === 0 && maxReachedStep < 3) {
-      const autoPoints = buildAutoTransitionPoints(
-        segments,
-        transitionConfig.pauseThreshold,
-        transitionConfig.type,
-        transitionConfig.duration,
-        transitionConfig.intensity,
-      );
-      setTransitionPoints(autoPoints);
-      setAlert(null);
-    } else if (subtitlesDirtySinceStep3) {
-      const manualPoints = transitionPoints.filter((p) => p.source === 'manual');
-      const recalculatedAuto = buildAutoTransitionPoints(
-        segments,
-        transitionConfig.pauseThreshold,
-        transitionConfig.type,
-        transitionConfig.duration,
-        transitionConfig.intensity,
-      );
-      const merged = [...recalculatedAuto, ...manualPoints].sort(
-        (a, b) => a.time - b.time,
-      );
-      setTransitionPoints(merged);
-      setSubtitlesDirtySinceStep3(false);
-      setAlert({
-        type: 'info',
-        message:
-          'As legendas foram alteradas na Etapa 2. Os pontos de transição foram recalculados automaticamente.',
-      });
-    } else {
-      setAlert(null);
-    }
-
-    setClipEndTime(null);
-    setStep(3);
-    setMaxReachedStep((prev) => Math.max(prev, 3));
-  };
-
+  // Step 2 -> Exportar (Requires subtitlesReviewed confirmation)
   const handleGoToExport = () => {
+    if (segments.length === 0 || !subtitlesReviewed) return;
     setAlert(null);
     if (videoRef.current && !videoRef.current.paused) {
       videoRef.current.pause();
     }
     setClipEndTime(null);
     setStep('export');
-    setMaxReachedStep(4);
+    setMaxReachedStep(3);
   };
 
   const handleSelectWizardStep = (targetStep: WizardStep) => {
@@ -673,10 +782,6 @@ export default function App() {
       videoRef.current.pause();
     }
     setClipEndTime(null);
-    if (targetStep === 3) {
-      handleGoToStep3();
-      return;
-    }
     setStep(targetStep);
   };
 
@@ -688,10 +793,7 @@ export default function App() {
 
   const markSubtitlesModified = useCallback(() => {
     setSubtitlesReviewed(false);
-    if (maxReachedStep >= 3) {
-      setSubtitlesDirtySinceStep3(true);
-    }
-  }, [maxReachedStep]);
+  }, []);
 
   const handleUndo = useCallback(() => {
     setUndoStack((prev) => {
@@ -866,69 +968,6 @@ export default function App() {
     vid.play().catch(() => {});
   };
 
-  // Step 3 transition point operations
-  const handleRecalculatePauses = () => {
-    const manualPoints = transitionPoints.filter((p) => p.source === 'manual');
-    const autoPoints = buildAutoTransitionPoints(
-      segments,
-      transitionConfig.pauseThreshold,
-      transitionConfig.type,
-      transitionConfig.duration,
-      transitionConfig.intensity,
-    );
-    const merged = [...autoPoints, ...manualPoints].sort((a, b) => a.time - b.time);
-    setTransitionPoints(merged);
-    setAlert({
-      type: 'success',
-      message: `${autoPoints.length} pontos de pausa detectados e atualizados na timeline.`,
-    });
-  };
-
-  const handleAddTransitionAtPlayhead = () => {
-    const newPoint: TransitionPoint = {
-      id: `tp_man_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      time: Number(currentTime.toFixed(3)),
-      type: transitionConfig.type,
-      duration: transitionConfig.duration,
-      intensity: transitionConfig.intensity,
-      source: 'manual',
-    };
-    setTransitionPoints((prev) =>
-      [...prev, newPoint].sort((a, b) => a.time - b.time),
-    );
-    setSelectedTransitionId(newPoint.id);
-    setPreviewTransitionTrigger((prev) => ({
-      type: newPoint.type,
-      nonce: (prev?.nonce ?? 0) + 1,
-    }));
-  };
-
-  const handleRemoveTransitionPoint = (pointId: string) => {
-    setTransitionPoints((prev) => prev.filter((p) => p.id !== pointId));
-    if (selectedTransitionId === pointId) setSelectedTransitionId(null);
-  };
-
-  const handleUpdatePointType = (pointId: string, type: TransitionType) => {
-    setTransitionPoints((prev) =>
-      prev.map((p) => (p.id === pointId ? { ...p, type } : p)),
-    );
-    setPreviewTransitionTrigger((prev) => ({
-      type,
-      nonce: (prev?.nonce ?? 0) + 1,
-    }));
-  };
-
-  const handleTransitionConfigChange = (next: TransitionConfig) => {
-    setTransitionConfig(next);
-    // Sync duration & intensity updates cleanly to auto points
-    setTransitionPoints((prev) =>
-      prev.map((p) =>
-        p.source === 'auto'
-          ? { ...p, duration: next.duration, intensity: next.intensity }
-          : p,
-      ),
-    );
-  };
 
   const handleTogglePlay = () => {
     const vid = videoRef.current;
@@ -982,9 +1021,6 @@ export default function App() {
         videoUrl,
         segments,
         style: styleConfig,
-        transition: transitionConfig,
-        transitionPoints,
-        pauses,
         onProgress: setExportProgress,
         signal: controller.signal,
       });
@@ -1004,7 +1040,7 @@ export default function App() {
 
       setAlert({
         type: 'success',
-        message: 'Vídeo final renderizado com legendas e transições e baixado com sucesso.',
+        message: 'Vídeo final renderizado com legendas e baixado com sucesso.',
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -1054,8 +1090,15 @@ export default function App() {
         duration,
         language,
         styleConfig,
-        transitionConfig,
-        transitionPoints,
+        transitionConfig: {
+          enabled: false,
+          mode: 'transition',
+          type: 'fade',
+          intensity: 'low',
+          pauseThreshold: 0.7,
+          duration: 0.45,
+        },
+        transitionPoints: [],
         segments,
       });
       setActiveProjectId(savedId);
@@ -1094,37 +1137,19 @@ export default function App() {
       setStyleConfig({ ...PRESET_DEFINITIONS.viral_impacto.style });
     }
 
-    const loadedTransition: TransitionConfig = {
-      ...proj.transitionConfig,
-      duration: proj.transitionConfig.duration ?? 0.45,
-    };
-    setTransitionConfig(loadedTransition);
     setSegments(proj.segments);
-
-    const pts =
-      proj.transitionPoints && proj.transitionPoints.length > 0
-        ? proj.transitionPoints
-        : buildAutoTransitionPoints(
-            proj.segments,
-            loadedTransition.pauseThreshold,
-            loadedTransition.type,
-            loadedTransition.duration,
-            loadedTransition.intensity,
-          );
-    setTransitionPoints(pts);
     setUndoStack([]);
     setRedoStack([]);
     setSubtitlesReviewed(Boolean(proj.segments.length > 0));
 
     setView('wizard');
     setStep(videoUrl ? 2 : 1);
-    setMaxReachedStep(videoUrl ? 3 : 1);
-    setSubtitlesDirtySinceStep3(false);
+    setMaxReachedStep(videoUrl ? 2 : 1);
     setAlert({
       type: 'info',
       message: videoUrl
         ? `Projeto "${proj.title}" carregado.`
-        : `Projeto "${proj.title}" carregado. Envie o arquivo de vídeo local correspondente para avançar às etapas 2 e 3.`,
+        : `Projeto "${proj.title}" carregado. Envie o arquivo de vídeo local correspondente para revisar na Etapa 2 e exportar.`,
     });
   };
 
@@ -1232,7 +1257,7 @@ export default function App() {
                     />
                   )}
                   <span className="truncate font-medium">
-                    {user.displayName || user.email || user.phoneNumber}
+                    {user.displayName || user.email}
                   </span>
                 </div>
                 <button
@@ -1265,7 +1290,6 @@ export default function App() {
           maxReachedStep={maxReachedStep}
           hasVideo={Boolean(videoUrl)}
           hasSubtitles={segments.length > 0}
-          subtitlesReviewed={subtitlesReviewed}
           onSelectStep={handleSelectWizardStep}
         />
       )}
@@ -1351,8 +1375,6 @@ export default function App() {
               isPlaying={isPlaying}
               segments={[]}
               styleConfig={styleConfig}
-              transitionConfig={transitionConfig}
-              transitionPoints={[]}
               videoRef={videoRef}
               onSelectFile={handleSelectFile}
               onTogglePlay={handleTogglePlay}
@@ -1387,7 +1409,7 @@ export default function App() {
                 <button
                   type="button"
                   disabled={segments.length === 0 || isTranscribing || !subtitlesReviewed}
-                  onClick={handleGoToStep3}
+                  onClick={handleGoToExport}
                   title={
                     !subtitlesReviewed
                       ? 'Clique em "Legendas revisadas" antes de continuar'
@@ -1431,8 +1453,6 @@ export default function App() {
                   isPlaying={isPlaying}
                   segments={segments}
                   styleConfig={styleConfig}
-                  transitionConfig={transitionConfig}
-                  transitionPoints={[]}
                   clipEndTime={clipEndTime}
                   videoRef={videoRef}
                   onTogglePlay={handleTogglePlay}
@@ -1488,108 +1508,20 @@ export default function App() {
                     setAlert({
                       type: 'success',
                       message:
-                        'Legendas confirmadas como revisadas! Clique em "Continuar" para configurar as transições.',
+                        'Legendas confirmadas como revisadas! Clique em "Continuar" para exportar o vídeo.',
                     });
                   }}
                 />
               </section>
             </div>
           </div>
-        ) : step === 3 ? (
-          /* ===================== ETAPA 3: TRANSIÇÕES ===================== */
-          <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 space-y-6">
-            {/* Step 3 Top Action Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-4 pb-2 border-b border-white/10">
-              <div>
-                <h1 className="text-lg font-bold text-slate-100">
-                  3. Transições
-                </h1>
-                <p className="text-xs text-slate-400">
-                  As legendas estão aplicadas e travadas. Adicione, remova ou troque a transição de cada ponto da timeline.
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => handleSelectWizardStep(2)}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#181C27] border border-white/10 text-xs font-semibold text-slate-200 hover:bg-white/10 transition-colors whitespace-nowrap"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  Voltar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleGoToExport}
-                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-amber-400 text-slate-950 text-xs font-semibold hover:bg-amber-300 transition-colors whitespace-nowrap"
-                >
-                  Exportar
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Two-Column Step 3 Layout */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              <section className="lg:col-span-5 lg:sticky lg:top-24">
-                <VideoPlayerShell
-                  step={3}
-                  videoUrl={videoUrl}
-                  videoFileName={videoFileName}
-                  duration={duration}
-                  currentTime={currentTime}
-                  isPlaying={isPlaying}
-                  segments={segments}
-                  styleConfig={styleConfig}
-                  transitionConfig={transitionConfig}
-                  transitionPoints={transitionPoints}
-                  pauses={pauses}
-                  selectedTransitionId={selectedTransitionId}
-                  previewTransitionTrigger={previewTransitionTrigger}
-                  videoRef={videoRef}
-                  onTogglePlay={handleTogglePlay}
-                  onSeek={handleSeek}
-                  onTimeSync={setCurrentTime}
-                  onLoadedMetadata={(dur) => setDuration(dur)}
-                  onPlayStateChange={setIsPlaying}
-                  onSelectTransitionPoint={(pt) => setSelectedTransitionId(pt.id)}
-                  onAddTransitionAtPlayhead={handleAddTransitionAtPlayhead}
-                />
-              </section>
-
-              <section className="lg:col-span-7">
-                <Step3TransitionsPanel
-                  transitionConfig={transitionConfig}
-                  transitionPoints={transitionPoints}
-                  selectedPointId={selectedTransitionId}
-                  currentTime={currentTime}
-                  hasVideo={Boolean(videoUrl)}
-                  onConfigChange={handleTransitionConfigChange}
-                  onAddPointAtCurrentTime={handleAddTransitionAtPlayhead}
-                  onRemovePoint={handleRemoveTransitionPoint}
-                  onUpdatePointType={handleUpdatePointType}
-                  onRecalculatePauses={handleRecalculatePauses}
-                  onSelectPoint={(pt) => {
-                    setSelectedTransitionId(pt.id);
-                    handleSeek(Math.max(0, pt.time - 0.35));
-                  }}
-                  onPreviewTransitionOnVideo={(type) =>
-                    setPreviewTransitionTrigger((prev) => ({
-                      type,
-                      nonce: (prev?.nonce ?? 0) + 1,
-                    }))
-                  }
-                />
-              </section>
-            </div>
-          </div>
         ) : (
-          /* ===================== EXPORTAÇÃO (APÓS ETAPA 3) ===================== */
+          /* ===================== EXPORTAÇÃO (APÓS ETAPA 2) ===================== */
           <ExportStage
             projectTitle={projectTitle}
             duration={duration}
             segments={segments}
             styleConfig={styleConfig}
-            transitionPoints={transitionPoints}
             hasVideo={Boolean(videoUrl)}
             isExporting={isExporting}
             exportProgress={exportProgress}
@@ -1599,7 +1531,7 @@ export default function App() {
             onCancelExport={() => exportAbortRef.current?.abort()}
             onDownloadSrt={handleDownloadSrt}
             onSaveProject={handleSaveProject}
-            onBackToStep3={() => setStep(3)}
+            onBackToStep2={() => setStep(2)}
           />
         )}
       </main>

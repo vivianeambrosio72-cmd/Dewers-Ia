@@ -1,30 +1,23 @@
 import { initializeApp } from 'firebase/app';
 import {
   browserLocalPersistence,
+  createUserWithEmailAndPassword,
   getAuth,
   GoogleAuthProvider,
-  RecaptchaVerifier,
+  sendPasswordResetEmail,
   setPersistence,
-  signInWithPhoneNumber,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
-  type ConfirmationResult,
   type User,
 } from 'firebase/auth';
 import {
   doc,
   getDocFromServer,
   getFirestore,
+  initializeFirestore,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
-
-declare global {
-  interface Window {
-    grecaptcha?: {
-      reset: (widgetId?: number) => void;
-    };
-  }
-}
 
 export const ADMIN_EMAIL = 'vivianeambrosio72@gmail.com';
 const LAST_FIREBASE_ERROR_KEY = 'dewes_ia_last_firebase_error_v1';
@@ -42,7 +35,19 @@ export interface LastFirebaseErrorRecord {
 }
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+function createFirestoreClient() {
+  try {
+    return initializeFirestore(
+      app,
+      { experimentalForceLongPolling: true },
+      firebaseConfig.firestoreDatabaseId,
+    );
+  } catch {
+    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
+}
+
+export const db = createFirestoreClient();
 export const auth = getAuth(app);
 auth.languageCode = 'pt';
 
@@ -170,11 +175,23 @@ export function handleFirestoreError(
 }
 
 async function testConnection() {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Verifique a configuração do Firebase: cliente offline.');
+    const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    if (msg.includes('client is offline') || msg.includes('unavailable')) {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (retryErr) {
+        const retryMsg =
+          retryErr instanceof Error ? retryErr.message.toLowerCase() : String(retryErr).toLowerCase();
+        if (retryMsg.includes('client is offline')) {
+          console.error('Verifique a configuração do Firebase: cliente offline.');
+        }
+      }
     }
   }
 }
@@ -184,119 +201,16 @@ export async function signInWithGoogle() {
   return signInWithPopup(auth, googleProvider);
 }
 
-// Single reusable invisible RecaptchaVerifier instance management
-let activeRecaptcha: RecaptchaVerifier | null = null;
-let activeRecaptchaWidgetId: number | null = null;
-let activeRecaptchaContainer: HTMLElement | string | null = null;
-
-function resolveContainerElement(
-  containerTarget: HTMLElement | string | null,
-): HTMLElement | null {
-  if (!containerTarget || typeof document === 'undefined') return null;
-  if (typeof containerTarget === 'string') {
-    return document.getElementById(containerTarget);
-  }
-  return containerTarget;
+export async function signInWithEmail(email: string, password: string) {
+  return signInWithEmailAndPassword(auth, email.trim(), password);
 }
 
-export function clearRecaptchaVerifier(
-  containerTarget?: HTMLElement | string | null,
-) {
-  if (
-    activeRecaptchaWidgetId !== null &&
-    typeof window !== 'undefined' &&
-    typeof window.grecaptcha?.reset === 'function'
-  ) {
-    try {
-      window.grecaptcha.reset(activeRecaptchaWidgetId);
-    } catch {
-      // ignore reset errors
-    }
-  }
-
-  if (activeRecaptcha) {
-    try {
-      activeRecaptcha.clear();
-    } catch {
-      // ignore cleanup errors
-    }
-  }
-
-  const targetEl = resolveContainerElement(
-    containerTarget ?? activeRecaptchaContainer,
-  );
-  if (targetEl) {
-    targetEl.innerHTML = '';
-  }
-
-  activeRecaptcha = null;
-  activeRecaptchaWidgetId = null;
-  activeRecaptchaContainer = null;
+export async function registerWithEmail(email: string, password: string) {
+  return createUserWithEmailAndPassword(auth, email.trim(), password);
 }
 
-async function getOrCreateRecaptchaVerifier(
-  containerTarget: HTMLElement | string,
-  forceNew = false,
-): Promise<RecaptchaVerifier> {
-  if (forceNew) {
-    clearRecaptchaVerifier(containerTarget);
-  }
-
-  if (activeRecaptcha && activeRecaptchaContainer === containerTarget) {
-    return activeRecaptcha;
-  }
-
-  // Ensure the fixed DOM container starts clean before rendering
-  clearRecaptchaVerifier(containerTarget);
-
-  const verifier = new RecaptchaVerifier(auth, containerTarget, {
-    size: 'invisible',
-    callback: () => {
-      // Token resolved silently
-    },
-    'expired-callback': () => {
-      if (
-        activeRecaptchaWidgetId !== null &&
-        typeof window !== 'undefined' &&
-        typeof window.grecaptcha?.reset === 'function'
-      ) {
-        try {
-          window.grecaptcha.reset(activeRecaptchaWidgetId);
-        } catch {
-          // ignore
-        }
-      }
-    },
-  });
-
-  try {
-    activeRecaptcha = verifier;
-    activeRecaptchaContainer = containerTarget;
-    activeRecaptchaWidgetId = await verifier.render();
-    return verifier;
-  } catch (err) {
-    clearRecaptchaVerifier(containerTarget);
-    throw err;
-  }
-}
-
-export async function sendPhoneVerificationCode(
-  phoneNumberE164: string,
-  containerTarget: HTMLElement | string,
-  options?: { forceFreshRecaptcha?: boolean },
-): Promise<ConfirmationResult> {
-  try {
-    const verifier = await getOrCreateRecaptchaVerifier(
-      containerTarget,
-      Boolean(options?.forceFreshRecaptcha),
-    );
-    return await signInWithPhoneNumber(auth, phoneNumberE164, verifier);
-  } catch (err) {
-    // Always reset & clear so the next attempt recreates cleanly without
-    // triggering "reCAPTCHA has already been rendered in this element".
-    clearRecaptchaVerifier(containerTarget);
-    throw err;
-  }
+export async function resetPasswordWithEmail(email: string) {
+  return sendPasswordResetEmail(auth, email.trim());
 }
 
 export function mapAuthErrorToPortuguese(error: unknown): string {
@@ -306,29 +220,31 @@ export function mapAuthErrorToPortuguese(error: unknown): string {
   if (code === 'auth/popup-closed-by-user') {
     return '';
   }
-  if (code === 'auth/invalid-phone-number' || msg.includes('invalid-phone-number')) {
-    return 'Número inválido. Confira e tente de novo.';
+  if (code === 'auth/invalid-email' || msg.includes('invalid-email')) {
+    return 'E-mail inválido. Confira e tente de novo.';
+  }
+  if (
+    code === 'auth/user-not-found' ||
+    code === 'auth/wrong-password' ||
+    code === 'auth/invalid-credential' ||
+    msg.includes('invalid-credential')
+  ) {
+    return 'E-mail ou senha incorretos.';
+  }
+  if (code === 'auth/email-already-in-use' || msg.includes('email-already-in-use')) {
+    return 'Este e-mail já está cadastrado. Tente entrar na sua conta.';
+  }
+  if (code === 'auth/weak-password' || msg.includes('weak-password')) {
+    return 'A senha deve ter pelo menos 6 caracteres.';
+  }
+  if (code === 'auth/user-disabled' || msg.includes('user-disabled')) {
+    return 'Esta conta foi desativada. Avise o administrador.';
   }
   if (code === 'auth/too-many-requests' || msg.includes('too-many-requests')) {
     return 'Muitas tentativas. Aguarde alguns minutos.';
   }
-  if (
-    code === 'auth/invalid-verification-code' ||
-    msg.includes('invalid-verification-code')
-  ) {
-    return 'Código incorreto.';
-  }
-  if (code === 'auth/code-expired' || msg.includes('code-expired')) {
-    return 'O código expirou. Peça um novo.';
-  }
-  if (code === 'auth/captcha-check-failed' || msg.includes('captcha-check-failed')) {
-    return 'Falha na verificação. Atualize a página e tente novamente.';
-  }
-  if (code === 'auth/quota-exceeded' || msg.includes('quota-exceeded')) {
-    return 'Limite de SMS atingido. Tente mais tarde.';
-  }
   if (code === 'auth/operation-not-allowed' || msg.includes('operation-not-allowed')) {
-    return 'Login por telefone não está ativado. Avise o administrador.';
+    return 'Login por e-mail não está ativado no Firebase. Avise o administrador.';
   }
   if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
     return 'Este endereço não está autorizado no Firebase.';
@@ -336,15 +252,11 @@ export function mapAuthErrorToPortuguese(error: unknown): string {
   if (code === 'auth/network-request-failed' || msg.includes('network-request-failed')) {
     return 'Sem conexão. Verifique a internet.';
   }
-  if (code === 'auth/missing-phone-number') {
-    return 'Número inválido. Confira e tente de novo.';
-  }
 
   console.error('[DEWES Auth] Erro Firebase não mapeado:', code, error);
-  return 'Não foi possível concluir a verificação. Tente novamente em instantes.';
+  return 'Não foi possível concluir a autenticação. Tente novamente em instantes.';
 }
 
 export async function signOutUser() {
-  clearRecaptchaVerifier();
   return signOut(auth);
 }

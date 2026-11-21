@@ -325,7 +325,7 @@ async function startServer() {
         `Transcreva toda a fala deste arquivo com precisão de nível de palavra utilizando obrigatoriamente o idioma com código ${language} (${languageLabel}).`,
         'Regras obrigatórias:',
         `1. Código do idioma alvo para transcrição: ${language}. Se a fala estiver em outro idioma, transcreva/adapte fielmente para ${languageLabel} (${language}), mantendo o sincronismo exato.`,
-        '2. Se o áudio NÃO tiver fala humana audível (mudo, sem trilha de áudio ou apenas música/ruído sem voz), defina hasSpeech como false e retorne segments como [].',
+        '2. Se o áudio NÃO tiver voz humana falando palavras identificáveis (mudo, silêncio, apenas música instrumental, ruído ou tons contínuos), defina obrigatoriamente hasSpeech como false e retorne segments como []. Nunca invente falas inexistentes.',
         '3. Caso haja fala, defina hasSpeech como true e agrupe as falas em segmentos curtos e dinâmicos (2 a 4 palavras por bloco, ideal para legendas de vídeos curtos estilo Reels/TikTok).',
         '4. Para CADA palavra dentro de words, forneça text, start (em segundos decimais, ex: 1.42), end (em segundos decimais, ex: 1.78) e confidence (número de 0.0 a 1.0).',
         '5. Seja honesto na pontuação de confidence: atribua valor menor que 0.78 (ex: 0.55 a 0.75) sempre que houver dúvida ortográfica, nome próprio incomum, fala muito rápida, música alta ao fundo ou áudio pouco claro, para sinalizar ao usuário que aquela palavra merece revisão.',
@@ -342,87 +342,130 @@ async function startServer() {
       const startMs = Date.now();
       console.log(`[DEWES Transcribe] Enviando ${mimeType} (${fileStat.size} bytes) para Gemini...`);
 
-      const response = await withRetry(() =>
-        ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: {
-            parts: [mediaPart, { text: prompt }],
+      const systemInstruction = `Você é um engenheiro especialista em legendagem automática de vídeos curtos. Transcreva exclusivamente usando o código de idioma ${language} (${languageLabel}) e retorne JSON válido seguindo o schema, com tempos exatos em segundos e confiança calibrada para cada palavra falada.`;
+      const responseSchema = {
+        type: Type.OBJECT,
+        properties: {
+          hasSpeech: {
+            type: Type.BOOLEAN,
+            description:
+              'true se houver fala humana audível no vídeo, false se estiver mudo ou sem fala.',
           },
-          config: {
-            abortSignal: AbortSignal.timeout(45000),
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            systemInstruction: `Você é um engenheiro especialista em legendagem automática de vídeos curtos. Transcreva exclusivamente usando o código de idioma ${language} (${languageLabel}) e retorne JSON válido seguindo o schema, com tempos exatos em segundos e confiança calibrada para cada palavra falada.`,
-            responseMimeType: 'application/json',
-            responseSchema: {
+          detectedLanguage: {
+            type: Type.STRING,
+            description: 'Código ou nome do idioma detectado na fala.',
+          },
+          segments: {
+            type: Type.ARRAY,
+            description:
+              'Lista ordenada cronologicamente de blocos curtos de legenda.',
+            items: {
               type: Type.OBJECT,
               properties: {
-                hasSpeech: {
-                  type: Type.BOOLEAN,
-                  description:
-                    'true se houver fala humana audível no vídeo, false se estiver mudo ou sem fala.',
-                },
-                detectedLanguage: {
+                text: {
                   type: Type.STRING,
-                  description: 'Código ou nome do idioma detectado na fala.',
-                },
-                segments: {
-                  type: Type.ARRAY,
                   description:
-                    'Lista ordenada cronologicamente de blocos curtos de legenda.',
+                    'Texto completo do bloco de legenda (2 a 6 palavras).',
+                },
+                start: {
+                  type: Type.NUMBER,
+                  description: 'Tempo de início do bloco em segundos.',
+                },
+                end: {
+                  type: Type.NUMBER,
+                  description: 'Tempo de término do bloco em segundos.',
+                },
+                words: {
+                  type: Type.ARRAY,
                   items: {
                     type: Type.OBJECT,
                     properties: {
                       text: {
                         type: Type.STRING,
                         description:
-                          'Texto completo do bloco de legenda (2 a 6 palavras).',
+                          'Palavra individual (incluindo pontuação anexa, se houver).',
                       },
                       start: {
                         type: Type.NUMBER,
-                        description: 'Tempo de início do bloco em segundos.',
+                        description: 'Início exato da palavra em segundos.',
                       },
                       end: {
                         type: Type.NUMBER,
-                        description: 'Tempo de término do bloco em segundos.',
+                        description:
+                          'Término exato da palavra em segundos.',
                       },
-                      words: {
-                        type: Type.ARRAY,
-                        items: {
-                          type: Type.OBJECT,
-                          properties: {
-                            text: {
-                              type: Type.STRING,
-                              description:
-                                'Palavra individual (incluindo pontuação anexa, se houver).',
-                            },
-                            start: {
-                              type: Type.NUMBER,
-                              description: 'Início exato da palavra em segundos.',
-                            },
-                            end: {
-                              type: Type.NUMBER,
-                              description:
-                                'Término exato da palavra em segundos.',
-                            },
-                            confidence: {
-                              type: Type.NUMBER,
-                              description:
-                                'Confiança de 0.0 a 1.0 na transcrição exata desta palavra (< 0.78 quando incerta).',
-                            },
-                          },
-                          required: ['text', 'start', 'end', 'confidence'],
-                        },
+                      confidence: {
+                        type: Type.NUMBER,
+                        description:
+                          'Confiança de 0.0 a 1.0 na transcrição exata desta palavra (< 0.78 quando incerta).',
                       },
                     },
-                    required: ['text', 'start', 'end', 'words'],
+                    required: ['text', 'start', 'end', 'confidence'],
                   },
                 },
               },
-              required: ['hasSpeech', 'detectedLanguage', 'segments'],
+              required: ['text', 'start', 'end', 'words'],
             },
           },
-        }),
-      );
+        },
+        required: ['hasSpeech', 'detectedLanguage', 'segments'],
+      };
+
+      const candidateModels = mimeType.startsWith('audio/')
+        ? ['gemini-3.5-transcribe', 'gemini-3.1-flash-lite', 'gemini-4-hydrogen']
+        : ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
+
+      let response: Awaited<ReturnType<typeof ai.models.generateContent>> | undefined;
+      let lastModelError: unknown;
+
+      for (const modelName of candidateModels) {
+        try {
+          const isFlashLite = modelName === 'gemini-3.1-flash-lite';
+          const isHydrogen = modelName === 'gemini-4-hydrogen';
+          response = await withRetry(
+            () =>
+              ai.models.generateContent({
+                model: modelName,
+                contents: {
+                  parts: [mediaPart, { text: prompt }],
+                },
+                config: {
+                  abortSignal: AbortSignal.timeout(30000),
+                  ...(isFlashLite
+                    ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } }
+                    : isHydrogen
+                      ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                      : {}),
+                  systemInstruction,
+                  responseMimeType: 'application/json',
+                  responseSchema,
+                },
+              }),
+            2,
+          );
+          console.log(
+            `[DEWES Transcribe] Modelo ${modelName} respondeu em ${Date.now() - startMs}ms.`,
+          );
+          break;
+        } catch (err) {
+          lastModelError = err;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[DEWES Transcribe] Modelo ${modelName} falhou (${errMsg}); tentando próximo se disponível.`,
+          );
+          if (
+            errMsg.includes('PERMISSION_DENIED') ||
+            errMsg.includes('API_KEY_INVALID') ||
+            errMsg.includes('403')
+          ) {
+            throw err;
+          }
+        }
+      }
+
+      if (!response) {
+        throw lastModelError ?? new Error('Nenhum modelo Gemini respondeu.');
+      }
 
       const rawText = (response.text ?? '').trim();
       if (!rawText) {
@@ -464,7 +507,22 @@ async function startServer() {
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error('Erro na transcrição Gemini:', msg);
+      const errName = error instanceof Error ? error.name : '';
+      console.error('Erro na transcrição Gemini:', errName, msg);
+
+      if (
+        errName === 'AbortError' ||
+        errName === 'TimeoutError' ||
+        msg.includes('aborted') ||
+        msg.includes('timeout')
+      ) {
+        res.status(504).json({
+          error:
+            'A transcrição demorou mais que o esperado na IA. Tente novamente em instantes ou envie um vídeo mais curto.',
+          code: 'GEMINI_TIMEOUT',
+        });
+        return;
+      }
 
       if (
         msg.includes('PERMISSION_DENIED') ||
@@ -681,6 +739,64 @@ async function startServer() {
         customDictionaryInput: req.body?.customDictionary,
         res,
       });
+    },
+  );
+
+  app.post(
+    '/api/transcribe-json',
+    express.json({ limit: '26mb' }),
+    async (req: Request, res: Response) => {
+      const audioBase64 =
+        typeof req.body?.audioBase64 === 'string' ? req.body.audioBase64 : '';
+      const rawFileName =
+        typeof req.body?.fileName === 'string'
+          ? path.basename(req.body.fileName)
+          : 'audio.wav';
+      const rawMimeType =
+        typeof req.body?.mimeType === 'string' ? req.body.mimeType : 'audio/wav';
+
+      if (!audioBase64) {
+        res.status(400).json({
+          error: 'Nenhum áudio foi enviado para transcrição.',
+          code: 'MISSING_FILE',
+        });
+        return;
+      }
+
+      const buffer = Buffer.from(audioBase64, 'base64');
+      if (buffer.length === 0 || buffer.length > INLINE_MAX_BYTES) {
+        res.status(413).json({
+          error: 'O áudio excedeu o limite permitido para envio direto.',
+          code: 'FILE_TOO_LARGE',
+        });
+        return;
+      }
+
+      const ext = path.extname(rawFileName).toLowerCase() || '.wav';
+      const safeTempPath = path.join(
+        UPLOAD_DIR,
+        `json_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`,
+      );
+
+      try {
+        await fs.promises.writeFile(safeTempPath, buffer);
+        await processTranscriptionAndRespond({
+          filePath: safeTempPath,
+          originalName: rawFileName,
+          rawMimeType,
+          languageInput: req.body?.language,
+          customDictionaryInput: req.body?.customDictionary,
+          res,
+        });
+      } catch (err) {
+        await fs.promises.unlink(safeTempPath).catch(() => {});
+        if (!res.headersSent) {
+          res.status(500).json({
+            error: `Erro ao preparar áudio para transcrição: ${err instanceof Error ? err.message : String(err)}`,
+            code: 'JSON_UPLOAD_ERROR',
+          });
+        }
+      }
     },
   );
 

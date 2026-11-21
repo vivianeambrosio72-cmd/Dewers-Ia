@@ -1,105 +1,29 @@
-import React, { useEffect, useRef, useState } from 'react';
-import type { ConfirmationResult } from 'firebase/auth';
+import React, { useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { AlertCircle, ArrowLeft, Loader2, Phone, RefreshCw } from 'lucide-react';
 import {
-  clearRecaptchaVerifier,
+  AlertCircle,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  Loader2,
+  Lock,
+  Mail,
+} from 'lucide-react';
+import {
   extractFirebaseErrorCode,
   mapAuthErrorToPortuguese,
   recordLastFirebaseError,
-  sendPhoneVerificationCode,
+  registerWithEmail,
+  resetPasswordWithEmail,
+  signInWithEmail,
   signInWithGoogle,
 } from '../firebase';
 import { DemoVideoPreview } from './DemoVideoPreview';
 import { PWAInstallButton } from './PWABanners';
 
-interface CountryOption {
-  code: string;
-  dial: string;
-  label: string;
-}
+type EmailAuthMode = 'login' | 'register';
 
-const COUNTRY_OPTIONS: CountryOption[] = [
-  { code: 'AO', dial: '+244', label: 'Angola (+244)' },
-  { code: 'BR', dial: '+55', label: 'Brasil (+55)' },
-  { code: 'PT', dial: '+351', label: 'Portugal (+351)' },
-  { code: 'MZ', dial: '+258', label: 'Moçambique (+258)' },
-  { code: 'CV', dial: '+238', label: 'Cabo Verde (+238)' },
-  { code: 'ST', dial: '+239', label: 'São Tomé e Príncipe (+239)' },
-  { code: 'GW', dial: '+245', label: 'Guiné-Bissau (+245)' },
-  { code: 'US', dial: '+1', label: 'Estados Unidos (+1)' },
-  { code: 'FR', dial: '+33', label: 'França (+33)' },
-  { code: 'ES', dial: '+34', label: 'Espanha (+34)' },
-  { code: 'GB', dial: '+44', label: 'Reino Unido (+44)' },
-];
-
-const RECAPTCHA_CONTAINER_ID = 'dewes-recaptcha-container';
-
-interface NormalizedPhoneResult {
-  dial: string;
-  localDigits: string;
-  e164: string;
-}
-
-export function normalizePhoneInput(
-  rawValue: string,
-  selectedDial: string,
-): NormalizedPhoneResult {
-  const trimmed = rawValue.trim();
-  const hasPlusPrefix = trimmed.startsWith('+');
-  let digits = trimmed.replace(/\D/g, '');
-
-  if (digits.startsWith('00')) {
-    digits = digits.slice(2);
-  }
-
-  let effectiveDial = selectedDial;
-  const selectedDialDigits = selectedDial.replace('+', '');
-
-  if (hasPlusPrefix) {
-    const byLongestDial = [...COUNTRY_OPTIONS].sort(
-      (a, b) => b.dial.length - a.dial.length,
-    );
-    const matched = byLongestDial.find((c) =>
-      digits.startsWith(c.dial.replace('+', '')),
-    );
-    if (matched) {
-      effectiveDial = matched.dial;
-      digits = digits.slice(matched.dial.replace('+', '').length);
-    }
-  } else if (
-    digits.startsWith(selectedDialDigits) &&
-    digits.length >= selectedDialDigits.length + 7
-  ) {
-    digits = digits.slice(selectedDialDigits.length);
-  }
-
-  // Strip any leading zeros on local part
-  const localDigits = digits.replace(/^0+/, '');
-
-  return {
-    dial: effectiveDial,
-    localDigits,
-    e164: `${effectiveDial}${localDigits}`,
-  };
-}
-
-function validateNormalizedPhone(
-  normalized: NormalizedPhoneResult,
-): string | null {
-  if (normalized.dial === '+244') {
-    if (!/^9\d{8}$/.test(normalized.localDigits)) {
-      return 'Número inválido. Digite 9 dígitos, ex.: 9XX XXX XXX';
-    }
-    return null;
-  }
-
-  if (normalized.localDigits.length < 7 || normalized.localDigits.length > 13) {
-    return 'Número inválido. Confira e tente de novo.';
-  }
-
-  return null;
-}
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface LoginScreenProps {
   onLoginSuccess?: () => void;
@@ -108,41 +32,22 @@ interface LoginScreenProps {
 export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const [googleLoading, setGoogleLoading] = useState(false);
 
-  // Phone Auth state
-  const [dialCode, setDialCode] = useState('+244');
-  const [localPhone, setLocalPhone] = useState('');
-  const [sentPhoneE164, setSentPhoneE164] = useState('');
-  const [smsStage, setSmsStage] = useState<'phone' | 'otp'>('phone');
-  const [confirmationResult, setConfirmationResult] =
-    useState<ConfirmationResult | null>(null);
-  const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
-  const [sendingSms, setSendingSms] = useState(false);
-  const [verifyingOtp, setVerifyingOtp] = useState(false);
-  const [resendTimer, setResendTimer] = useState(0);
+  // Email Auth state
+  const [mode, setMode] = useState<EmailAuthMode>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const otpInputRefs = useRef<Array<HTMLInputElement | null>>([]);
-  const recaptchaContainerRef = useRef<HTMLDivElement | null>(null);
-  const sendInFlightRef = useRef(false);
-  const verifyInFlightRef = useRef(false);
-
-  useEffect(() => {
-    const containerEl = recaptchaContainerRef.current;
-    return () => {
-      clearRecaptchaVerifier(containerEl);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (resendTimer <= 0) return;
-    const timer = window.setInterval(() => {
-      setResendTimer((prev) => (prev <= 1 ? 0 : prev - 1));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [resendTimer]);
+  const [infoMsg, setInfoMsg] = useState<string | null>(null);
+  const submitInFlightRef = useRef(false);
 
   const handleGoogleLogin = async () => {
     setErrorMsg(null);
+    setInfoMsg(null);
     setGoogleLoading(true);
     try {
       await signInWithGoogle();
@@ -159,193 +64,85 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
   };
 
-  const handlePhoneInputChange = (raw: string) => {
-    // Strip characters outside digits, spaces, dashes, parentheses, plus
-    const cleanedDisplay = raw.replace(/[^\d\s()+-]/g, '');
-    setLocalPhone(cleanedDisplay);
-    if (errorMsg) setErrorMsg(null);
+  const handleSwitchMode = (nextMode: EmailAuthMode) => {
+    setMode(nextMode);
+    setErrorMsg(null);
+    setInfoMsg(null);
+    setConfirmPassword('');
   };
 
-  const handlePhonePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
-    const pastedText = e.clipboardData.getData('text');
-    if (!pastedText) return;
-    const normalized = normalizePhoneInput(pastedText, dialCode);
-    if (normalized.localDigits.length > 0) {
-      e.preventDefault();
-      setDialCode(normalized.dial);
-      setLocalPhone(normalized.localDigits);
-      if (errorMsg) setErrorMsg(null);
-    }
-  };
-
-  const handleSendCode = async (e?: React.FormEvent, isResend = false) => {
-    e?.preventDefault();
-    if (sendInFlightRef.current) return;
+  const handleEmailSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (submitInFlightRef.current) return;
 
     setErrorMsg(null);
+    setInfoMsg(null);
 
-    const target = isResend && sentPhoneE164
-      ? normalizePhoneInput(sentPhoneE164, dialCode)
-      : normalizePhoneInput(localPhone, dialCode);
-
-    const validationError = validateNormalizedPhone(target);
-    if (validationError) {
-      setErrorMsg(validationError);
+    const trimmedEmail = email.trim();
+    if (!EMAIL_PATTERN.test(trimmedEmail)) {
+      setErrorMsg('Digite um endereço de e-mail válido.');
       return;
     }
 
-    // Reflect normalized local number & country selector cleanly
-    setDialCode(target.dial);
-    setLocalPhone(target.localDigits);
+    if (password.length < 6) {
+      setErrorMsg('A senha deve ter pelo menos 6 caracteres.');
+      return;
+    }
 
-    sendInFlightRef.current = true;
-    setSendingSms(true);
+    if (mode === 'register' && password !== confirmPassword) {
+      setErrorMsg('As senhas não coincidem. Confira e tente novamente.');
+      return;
+    }
+
+    submitInFlightRef.current = true;
+    setEmailLoading(true);
     try {
-      const containerTarget =
-        recaptchaContainerRef.current ?? RECAPTCHA_CONTAINER_ID;
-      const result = await sendPhoneVerificationCode(
-        target.e164,
-        containerTarget,
-        { forceFreshRecaptcha: isResend },
-      );
-      setConfirmationResult(result);
-      setSentPhoneE164(target.e164);
-      setSmsStage('otp');
-      setOtpDigits(['', '', '', '', '', '']);
-      setResendTimer(60);
-      window.setTimeout(() => {
-        otpInputRefs.current[0]?.focus();
-      }, 60);
-    } catch (err) {
-      recordLastFirebaseError(err, isResend ? 'phone-resend' : 'phone-send');
-      const msg = mapAuthErrorToPortuguese(err);
-      setErrorMsg(msg || 'Não foi possível enviar o código SMS.');
-    } finally {
-      sendInFlightRef.current = false;
-      setSendingSms(false);
-    }
-  };
-
-  const applyDigitsFromIndex = (startIndex: number, rawDigits: string) => {
-    const clean = rawDigits.replace(/\D/g, '');
-    if (!clean) {
-      setOtpDigits((prev) => {
-        const next = [...prev];
-        next[startIndex] = '';
-        return next;
-      });
-      return;
-    }
-
-    if (clean.length === 1) {
-      setOtpDigits((prev) => {
-        const next = [...prev];
-        next[startIndex] = clean;
-        return next;
-      });
-      if (startIndex < 5) {
-        otpInputRefs.current[startIndex + 1]?.focus();
+      if (mode === 'login') {
+        await signInWithEmail(trimmedEmail, password);
+      } else {
+        await registerWithEmail(trimmedEmail, password);
       }
-      return;
-    }
-
-    // Handles both full-code paste and OS SMS one-time-code autofill
-    const targetStart = clean.length >= 6 ? 0 : startIndex;
-    setOtpDigits((prev) => {
-      const next = [...prev];
-      for (let offset = 0; offset < clean.length && targetStart + offset < 6; offset++) {
-        next[targetStart + offset] = clean[offset];
-      }
-      return next;
-    });
-    const lastIdx = Math.min(5, targetStart + clean.length - 1);
-    const nextEmpty = Math.min(5, targetStart + clean.length);
-    otpInputRefs.current[lastIdx === 5 ? 5 : nextEmpty]?.focus();
-  };
-
-  const handleOtpChange = (index: number, rawValue: string) => {
-    if (errorMsg) setErrorMsg(null);
-    applyDigitsFromIndex(index, rawValue);
-  };
-
-  const handleOtpKeyDown = (
-    index: number,
-    e: React.KeyboardEvent<HTMLInputElement>,
-  ) => {
-    if (e.key === 'Backspace') {
-      if (otpDigits[index]) {
-        e.preventDefault();
-        setOtpDigits((prev) => {
-          const next = [...prev];
-          next[index] = '';
-          return next;
-        });
-      } else if (index > 0) {
-        e.preventDefault();
-        setOtpDigits((prev) => {
-          const next = [...prev];
-          next[index - 1] = '';
-          return next;
-        });
-        otpInputRefs.current[index - 1]?.focus();
-      }
-    } else if (e.key === 'ArrowLeft' && index > 0) {
-      otpInputRefs.current[index - 1]?.focus();
-    } else if (e.key === 'ArrowRight' && index < 5) {
-      otpInputRefs.current[index + 1]?.focus();
-    }
-  };
-
-  const handleOtpPaste = (
-    index: number,
-    e: React.ClipboardEvent<HTMLInputElement>,
-  ) => {
-    e.preventDefault();
-    const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
-    if (!pasted) return;
-    if (errorMsg) setErrorMsg(null);
-    applyDigitsFromIndex(pasted.length >= 6 ? 0 : index, pasted);
-  };
-
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (verifyInFlightRef.current) return;
-
-    setErrorMsg(null);
-    const code = otpDigits.join('');
-
-    if (code.length < 6) {
-      setErrorMsg('Digite os 6 dígitos do código recebido por SMS.');
-      return;
-    }
-    if (!confirmationResult) {
-      setErrorMsg('Sessão de verificação expirada. Solicite um novo código.');
-      return;
-    }
-
-    verifyInFlightRef.current = true;
-    setVerifyingOtp(true);
-    try {
-      await confirmationResult.confirm(code);
       onLoginSuccess?.();
     } catch (err) {
-      recordLastFirebaseError(err, 'phone-verify');
+      recordLastFirebaseError(
+        err,
+        mode === 'login' ? 'email-login' : 'email-register',
+      );
       const msg = mapAuthErrorToPortuguese(err);
-      setErrorMsg(msg || 'Código incorreto.');
+      setErrorMsg(msg || 'Não foi possível entrar com e-mail.');
     } finally {
-      verifyInFlightRef.current = false;
-      setVerifyingOtp(false);
+      submitInFlightRef.current = false;
+      setEmailLoading(false);
     }
   };
 
-  const handleChangePhoneNumber = () => {
-    setSmsStage('phone');
-    setConfirmationResult(null);
-    setSentPhoneE164('');
-    setOtpDigits(['', '', '', '', '', '']);
-    setResendTimer(0);
+  const handlePasswordReset = async () => {
+    if (resetLoading || emailLoading) return;
     setErrorMsg(null);
+    setInfoMsg(null);
+
+    const trimmedEmail = email.trim();
+    if (!EMAIL_PATTERN.test(trimmedEmail)) {
+      setErrorMsg('Digite seu e-mail acima para receber o link de redefinição.');
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      await resetPasswordWithEmail(trimmedEmail);
+      setInfoMsg(
+        `Enviamos um link para redefinir a senha para ${trimmedEmail}. Confira a caixa de entrada e o spam.`,
+      );
+    } catch (err) {
+      recordLastFirebaseError(err, 'email-reset-password');
+      const msg = mapAuthErrorToPortuguese(err);
+      setErrorMsg(msg || 'Não foi possível enviar o e-mail de recuperação.');
+    } finally {
+      setResetLoading(false);
+    }
   };
+
+  const busy = googleLoading || emailLoading || resetLoading;
 
   return (
     <div
@@ -399,10 +196,21 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
             </div>
           )}
 
+          {/* Success / Info Feedback */}
+          {infoMsg && (
+            <div
+              role="status"
+              className="mb-5 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-200 flex items-start gap-2.5 leading-relaxed"
+            >
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              <span>{infoMsg}</span>
+            </div>
+          )}
+
           {/* Method 1: Continue with Google (untouched auth logic) */}
           <button
             type="button"
-            disabled={googleLoading || sendingSms || verifyingOtp}
+            disabled={busy}
             onClick={handleGoogleLogin}
             className="w-full h-11 px-4 rounded-xl bg-white text-slate-900 border border-white/20 text-sm font-semibold hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-3 shadow-sm"
           >
@@ -442,143 +250,153 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
             <div className="flex-1 h-px bg-white/10" />
           </div>
 
-          {/* Method 2: Phone + SMS Code */}
-          {smsStage === 'phone' ? (
-            <form onSubmit={(e) => handleSendCode(e, false)} className="space-y-3.5">
-              <div className="space-y-1.5">
+          {/* Method 2: Email & Password */}
+          <div className="mb-4 grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[#0B0D13] border border-white/10">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => handleSwitchMode('login')}
+              className={`h-8 rounded-lg text-xs font-semibold transition-colors ${
+                mode === 'login'
+                  ? 'bg-white/10 text-white'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Entrar
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => handleSwitchMode('register')}
+              className={`h-8 rounded-lg text-xs font-semibold transition-colors ${
+                mode === 'register'
+                  ? 'bg-white/10 text-white'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Criar conta
+            </button>
+          </div>
+
+          <form onSubmit={handleEmailSubmit} className="space-y-3.5" noValidate>
+            <div className="space-y-1.5">
+              <label
+                htmlFor="login-email"
+                className="text-xs font-medium text-slate-300 flex items-center gap-1.5"
+              >
+                <Mail className="w-3.5 h-3.5 text-slate-400" />
+                E-mail
+              </label>
+              <input
+                id="login-email"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                value={email}
+                disabled={busy}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  if (errorMsg) setErrorMsg(null);
+                  if (infoMsg) setInfoMsg(null);
+                }}
+                placeholder="seuemail@exemplo.com"
+                className="w-full h-11 px-3.5 rounded-xl bg-[#0B0D13] border border-white/10 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-400 transition-colors"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
                 <label
-                  htmlFor="login-phone-number"
+                  htmlFor="login-password"
                   className="text-xs font-medium text-slate-300 flex items-center gap-1.5"
                 >
-                  <Phone className="w-3.5 h-3.5 text-slate-400" />
-                  Entrar com celular (SMS)
+                  <Lock className="w-3.5 h-3.5 text-slate-400" />
+                  Senha
                 </label>
-
-                <div className="flex gap-2">
-                  <select
-                    aria-label="Indicativo do país"
-                    value={dialCode}
-                    disabled={sendingSms}
-                    onChange={(e) => setDialCode(e.target.value)}
-                    className="w-[140px] shrink-0 h-11 px-2.5 rounded-xl bg-[#0B0D13] border border-white/10 text-xs text-slate-100 focus:outline-none focus:border-purple-400"
+                {mode === 'login' && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={handlePasswordReset}
+                    className="text-[11px] text-purple-300 hover:text-purple-200 disabled:opacity-50 transition-colors"
                   >
-                    {COUNTRY_OPTIONS.map((c) => (
-                      <option key={c.code} value={c.dial}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
-
-                  <input
-                    id="login-phone-number"
-                    type="tel"
-                    inputMode="tel"
-                    autoComplete="tel-national"
-                    value={localPhone}
-                    disabled={sendingSms}
-                    onChange={(e) => handlePhoneInputChange(e.target.value)}
-                    onPaste={handlePhonePaste}
-                    placeholder="936 964 366"
-                    className="flex-1 min-w-0 h-11 px-3.5 rounded-xl bg-[#0B0D13] border border-white/10 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-400"
-                  />
-                </div>
-                {dialCode === '+244' && (
-                  <p className="text-[11px] text-slate-500">
-                    Digite 9 dígitos começando com 9 (ex.: 9XX XXX XXX).
-                  </p>
+                    {resetLoading ? 'Enviando...' : 'Esqueci minha senha'}
+                  </button>
                 )}
               </div>
-
-              <button
-                type="submit"
-                disabled={sendingSms || googleLoading}
-                className="w-full h-11 rounded-xl text-sm font-semibold text-white transition-opacity hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                style={{
-                  backgroundImage:
-                    'linear-gradient(90deg, #8A2BE2 0%, #FF4D8D 100%)',
-                }}
-              >
-                {sendingSms && <Loader2 className="w-4 h-4 animate-spin" />}
-                {sendingSms ? 'Enviando código...' : 'Enviar código'}
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleVerifyOtp} className="space-y-4">
-              <div className="flex items-center justify-between gap-2 text-xs">
-                <span className="text-slate-300">
-                  Código enviado para{' '}
-                  <strong className="text-white">{sentPhoneE164}</strong>
-                </span>
+              <div className="relative">
+                <input
+                  id="login-password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                  value={password}
+                  disabled={busy}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    if (errorMsg) setErrorMsg(null);
+                  }}
+                  placeholder="Mínimo de 6 caracteres"
+                  className="w-full h-11 pl-3.5 pr-10 rounded-xl bg-[#0B0D13] border border-white/10 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-400 transition-colors"
+                />
                 <button
                   type="button"
-                  onClick={handleChangePhoneNumber}
-                  className="inline-flex items-center gap-1 text-purple-300 hover:text-purple-200 font-medium shrink-0"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-200 transition-colors"
                 >
-                  <ArrowLeft className="w-3 h-3" />
-                  Alterar número
+                  {showPassword ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
                 </button>
               </div>
+            </div>
 
-              {/* 6 Separate OTP Inputs with SMS autofill & paste support */}
-              <div
-                className="grid grid-cols-6 gap-2"
-                aria-label="Código de verificação de 6 dígitos"
-              >
-                {otpDigits.map((digit, idx) => (
-                  <input
-                    key={idx}
-                    ref={(el) => {
-                      otpInputRefs.current[idx] = el;
-                    }}
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    autoComplete={idx === 0 ? 'one-time-code' : 'off'}
-                    value={digit}
-                    disabled={verifyingOtp}
-                    onChange={(e) => handleOtpChange(idx, e.target.value)}
-                    onKeyDown={(e) => handleOtpKeyDown(idx, e)}
-                    onPaste={(e) => handleOtpPaste(idx, e)}
-                    aria-label={`Dígito ${idx + 1}`}
-                    className="h-12 rounded-xl bg-[#0B0D13] border border-white/15 text-center text-lg font-bold text-white focus:outline-none focus:border-purple-400 transition-colors"
-                  />
-                ))}
-              </div>
-
-              <button
-                type="submit"
-                disabled={verifyingOtp || otpDigits.join('').length < 6}
-                className="w-full h-11 rounded-xl text-sm font-semibold text-white transition-opacity hover:opacity-95 disabled:opacity-45 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                style={{
-                  backgroundImage:
-                    'linear-gradient(90deg, #8A2BE2 0%, #FF4D8D 100%)',
-                }}
-              >
-                {verifyingOtp && <Loader2 className="w-4 h-4 animate-spin" />}
-                {verifyingOtp ? 'Verificando...' : 'Verificar e entrar'}
-              </button>
-
-              {/* 60-second Resend Countdown */}
-              <div className="flex items-center justify-center">
-                <button
-                  type="button"
-                  disabled={resendTimer > 0 || sendingSms}
-                  onClick={() => handleSendCode(undefined, true)}
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-white disabled:text-slate-500 disabled:cursor-not-allowed transition-colors"
+            {mode === 'register' && (
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="login-confirm-password"
+                  className="text-xs font-medium text-slate-300 flex items-center gap-1.5"
                 >
-                  <RefreshCw className="w-3 h-3" />
-                  {resendTimer > 0
-                    ? `Reenviar código em ${resendTimer}s`
-                    : sendingSms
-                      ? 'Reenviando...'
-                      : 'Reenviar código'}
-                </button>
+                  <Lock className="w-3.5 h-3.5 text-slate-400" />
+                  Confirmar senha
+                </label>
+                <input
+                  id="login-confirm-password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  disabled={busy}
+                  onChange={(e) => {
+                    setConfirmPassword(e.target.value);
+                    if (errorMsg) setErrorMsg(null);
+                  }}
+                  placeholder="Repita a senha"
+                  className="w-full h-11 px-3.5 rounded-xl bg-[#0B0D13] border border-white/10 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-400 transition-colors"
+                />
               </div>
-            </form>
-          )}
+            )}
 
-          {/* Fixed single invisible reCAPTCHA mount point kept alive across stages */}
-          <div ref={recaptchaContainerRef} id={RECAPTCHA_CONTAINER_ID} />
+            <button
+              type="submit"
+              disabled={busy}
+              className="w-full h-11 rounded-xl text-sm font-semibold text-white transition-opacity hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              style={{
+                backgroundImage:
+                  'linear-gradient(90deg, #8A2BE2 0%, #FF4D8D 100%)',
+              }}
+            >
+              {emailLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+              {mode === 'login'
+                ? emailLoading
+                  ? 'Entrando...'
+                  : 'Entrar com e-mail'
+                : emailLoading
+                  ? 'Criando conta...'
+                  : 'Criar conta com e-mail'}
+            </button>
+          </form>
 
           {/* Small Legal Footer */}
           <p className="mt-7 text-[11px] text-center text-slate-500 leading-relaxed">

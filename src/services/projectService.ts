@@ -21,39 +21,49 @@ import type {
   TransitionConfig,
 } from '../types';
 
+function isTransientOfflineError(error: unknown): boolean {
+  const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '').toLowerCase()
+      : '';
+  return (
+    code === 'unavailable' ||
+    msg.includes('client is offline') ||
+    msg.includes('unavailable')
+  );
+}
+
 export async function upsertUserProfile(user: User): Promise<void> {
-  if (!user.email && !user.phoneNumber) return;
+  if (!user.email) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
   const userRef = doc(db, 'users', user.uid);
   const path = `users/${user.uid}`;
-  try {
+
+  const runSync = async () => {
     const existing = await getDoc(userRef);
     const displayName = (
       user.displayName ||
-      user.email?.split('@')[0] ||
-      user.phoneNumber ||
+      user.email!.split('@')[0] ||
       'Criador'
     ).slice(0, 120);
     const hasGoogleProvider = user.providerData.some(
       (provider) => provider.providerId === 'google.com',
     );
-    const authProvider: 'google' | 'phone' = hasGoogleProvider ? 'google' : 'phone';
+    const authProvider: 'google' | 'email' = hasGoogleProvider ? 'google' : 'email';
     const role: 'admin' | 'user' = isAdminUser(user) ? 'admin' : 'user';
 
     if (!existing.exists()) {
       const payload: Record<string, unknown> = {
         uid: user.uid,
         displayName,
+        email: user.email!.slice(0, 254),
         role,
         authProvider,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
-      if (user.email) {
-        payload.email = user.email.slice(0, 254);
-      }
-      if (user.phoneNumber) {
-        payload.phoneNumber = user.phoneNumber.slice(0, 32);
-      }
       if (user.photoURL && user.photoURL.length <= 1000) {
         payload.photoURL = user.photoURL;
       }
@@ -61,22 +71,31 @@ export async function upsertUserProfile(user: User): Promise<void> {
     } else {
       const updatePayload: Record<string, unknown> = {
         displayName,
+        email: user.email!.slice(0, 254),
         role,
         authProvider,
         updatedAt: serverTimestamp(),
       };
-      if (user.email) {
-        updatePayload.email = user.email.slice(0, 254);
-      }
-      if (user.phoneNumber) {
-        updatePayload.phoneNumber = user.phoneNumber.slice(0, 32);
-      }
       if (user.photoURL && user.photoURL.length <= 1000) {
         updatePayload.photoURL = user.photoURL;
       }
       await updateDoc(userRef, updatePayload);
     }
+  };
+
+  try {
+    await runSync();
   } catch (error) {
+    if (isTransientOfflineError(error)) {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      try {
+        await runSync();
+        return;
+      } catch (retryErr) {
+        handleFirestoreError(retryErr, OperationType.WRITE, path);
+      }
+    }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
@@ -152,7 +171,7 @@ export async function saveSubtitleProject(params: {
   const docRef = doc(db, 'projects', id);
   const path = `projects/${id}`;
 
-  try {
+  const writeProject = async () => {
     const existing = await getDoc(docRef);
     const title = (params.title.trim() || 'Projeto sem título').slice(0, 160);
     const videoFileName = (params.videoFileName.trim() || 'video.mp4').slice(0, 200);
@@ -189,7 +208,19 @@ export async function saveSubtitleProject(params: {
       });
     }
     return id;
+  };
+
+  try {
+    return await writeProject();
   } catch (error) {
+    if (isTransientOfflineError(error)) {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      try {
+        return await writeProject();
+      } catch (retryErr) {
+        handleFirestoreError(retryErr, OperationType.WRITE, path);
+      }
+    }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }

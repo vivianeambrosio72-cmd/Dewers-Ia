@@ -7,11 +7,7 @@ import {
   Save,
   X,
 } from 'lucide-react';
-import type {
-  StyleConfig,
-  SubtitleSegment,
-  TransitionPoint,
-} from '../types';
+import type { StyleConfig, SubtitleSegment } from '../types';
 import { formatTimeDisplay } from '../utils/subtitles';
 
 interface ExportStageProps {
@@ -19,7 +15,6 @@ interface ExportStageProps {
   duration: number;
   segments: SubtitleSegment[];
   styleConfig: StyleConfig;
-  transitionPoints: TransitionPoint[];
   hasVideo: boolean;
   isExporting: boolean;
   exportProgress: number;
@@ -29,7 +24,7 @@ interface ExportStageProps {
   onCancelExport: () => void;
   onDownloadSrt: () => void;
   onSaveProject: () => void;
-  onBackToStep3: () => void;
+  onBackToStep2: () => void;
 }
 
 export function ExportStage({
@@ -37,7 +32,6 @@ export function ExportStage({
   duration,
   segments,
   styleConfig,
-  transitionPoints,
   hasVideo,
   isExporting,
   exportProgress,
@@ -47,7 +41,7 @@ export function ExportStage({
   onCancelExport,
   onDownloadSrt,
   onSaveProject,
-  onBackToStep3,
+  onBackToStep2,
 }: ExportStageProps) {
   const totalWords = segments.reduce((acc, s) => acc + s.words.length, 0);
 
@@ -61,13 +55,13 @@ export function ExportStage({
               Vídeo pronto para exportação
             </h1>
             <p className="text-sm text-slate-400 mt-1">
-              As legendas e transições configuradas serão aplicadas no arquivo final.
+              As legendas configuradas serão aplicadas no arquivo final.
             </p>
           </div>
         </div>
 
         {/* Summary Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-white/10">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-white/10">
           <div className="p-3 rounded-lg bg-[#090B10] border border-white/10">
             <div className="text-[11px] text-slate-400">Duração</div>
             <div className="font-mono-tabular text-sm font-semibold text-slate-100 mt-0.5">
@@ -86,12 +80,6 @@ export function ExportStage({
               {styleConfig.preset.replace('_', ' ').toUpperCase()}
             </div>
           </div>
-          <div className="p-3 rounded-lg bg-[#090B10] border border-white/10">
-            <div className="text-[11px] text-slate-400">Transições</div>
-            <div className="font-mono-tabular text-sm font-semibold text-sky-400 mt-0.5">
-              {transitionPoints.length} pontos
-            </div>
-          </div>
         </div>
 
         {/* Render Progress */}
@@ -99,7 +87,7 @@ export function ExportStage({
           <div className="p-4 rounded-lg bg-[#090B10] border border-amber-400/30 space-y-2.5">
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs font-medium text-slate-200">
-                Renderizando "{projectTitle}" com legendas e transições...
+                Renderizando "{projectTitle}" com legendas...
               </span>
               <div className="flex items-center gap-2 shrink-0">
                 <span className="font-mono-tabular text-xs font-semibold text-amber-400">
@@ -152,11 +140,11 @@ export function ExportStage({
           <button
             type="button"
             disabled={isExporting}
-            onClick={onBackToStep3}
+            onClick={onBackToStep2}
             className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
           >
             <ArrowLeft className="w-4 h-4" />
-            Voltar para Transições
+            Voltar para Legendas
           </button>
 
           <button

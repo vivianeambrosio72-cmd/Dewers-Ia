@@ -1,8 +1,4 @@
-import type {
-  DetectedPause,
-  SubtitleSegment,
-  WordTiming,
-} from '../types';
+import type { SubtitleSegment, WordTiming } from '../types';
 
 export function formatTimeDisplay(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
@@ -38,30 +34,6 @@ export function generateSrtContent(segments: SubtitleSegment[]): string {
     .join('\n');
 }
 
-export function detectLongPauses(
-  segments: SubtitleSegment[],
-  thresholdSeconds: number,
-): DetectedPause[] {
-  const pauses: DetectedPause[] = [];
-  if (segments.length < 2) return pauses;
-
-  for (let i = 0; i < segments.length - 1; i++) {
-    const current = segments[i];
-    const next = segments[i + 1];
-    const gap = next.start - current.end;
-    if (gap >= thresholdSeconds) {
-      pauses.push({
-        id: `pause_${i}_${current.id}`,
-        start: Number(current.end.toFixed(3)),
-        end: Number(next.start.toFixed(3)),
-        duration: Number(gap.toFixed(2)),
-        beforeSegmentId: current.id,
-        afterSegmentId: next.id,
-      });
-    }
-  }
-  return pauses;
-}
 
 export function rebuildSegmentWords(
   segment: SubtitleSegment,
@@ -374,85 +346,6 @@ export function getReviewWordsList(segments: SubtitleSegment[]): ReviewWordTarge
   return list;
 }
 
-export function getActiveTransitionState(
-  currentTime: number,
-  pauses: DetectedPause[],
-  enabled: boolean,
-  mode: 'transition' | 'cut',
-  transitionDuration = 0.45,
-): {
-  activePause: DetectedPause | null;
-  progress: number;
-} {
-  if (!enabled || mode !== 'transition' || pauses.length === 0) {
-    return { activePause: null, progress: 0 };
-  }
-
-  const dur = Math.min(2.0, Math.max(0.15, transitionDuration));
-  const halfPre = dur * 0.72;
-  const halfPost = dur * 0.28;
-
-  for (const pause of pauses) {
-    const triggerStart = Math.max(pause.start - 0.05, pause.end - halfPre);
-    const triggerEnd = pause.end + halfPost;
-    if (currentTime >= triggerStart && currentTime <= triggerEnd) {
-      const progress = Math.min(
-        1,
-        Math.max(0, (currentTime - triggerStart) / Math.max(0.05, triggerEnd - triggerStart)),
-      );
-      return { activePause: pause, progress };
-    }
-  }
-
-  return { activePause: null, progress: 0 };
-}
-
-export function buildAutoTransitionPoints(
-  segments: SubtitleSegment[],
-  thresholdSeconds: number,
-  defaultType: import('../types').TransitionType,
-  defaultDuration: number,
-  defaultIntensity: import('../types').TransitionIntensity,
-): import('../types').TransitionPoint[] {
-  const pauses = detectLongPauses(segments, thresholdSeconds);
-  return pauses.map((pause, index) => ({
-    id: `tp_auto_${index}_${pause.afterSegmentId}`,
-    time: pause.end,
-    type: defaultType,
-    duration: defaultDuration,
-    intensity: defaultIntensity,
-    source: 'auto' as const,
-    pauseDuration: pause.duration,
-  }));
-}
-
-export function getActivePointTransition(
-  currentTime: number,
-  points: import('../types').TransitionPoint[],
-  enabled: boolean,
-): {
-  activePoint: import('../types').TransitionPoint | null;
-  progress: number;
-} {
-  if (!enabled || points.length === 0) {
-    return { activePoint: null, progress: 0 };
-  }
-
-  for (const pt of points) {
-    const dur = Math.min(2.0, Math.max(0.15, pt.duration || 0.45));
-    const triggerStart = Math.max(0, pt.time - dur * 0.72);
-    const triggerEnd = pt.time + dur * 0.28;
-    if (currentTime >= triggerStart && currentTime <= triggerEnd) {
-      const progress = Math.min(
-        1,
-        Math.max(0, (currentTime - triggerStart) / Math.max(0.05, triggerEnd - triggerStart)),
-      );
-      return { activePoint: pt, progress };
-    }
-  }
-
-  return { activePoint: null, progress: 0 };
-}
 
 export interface ActiveWordChunk {
   chunkId: string;

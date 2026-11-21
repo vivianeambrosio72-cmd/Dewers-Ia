@@ -34,7 +34,7 @@ export function ProjectsPanel({
           Salve e sincronize seus projetos
         </h2>
         <p className="text-sm text-slate-400 leading-relaxed">
-          Entre com sua conta Google para guardar suas legendas editadas, estilos personalizados e configurações de transição na nuvem.
+          Entre com sua conta para guardar suas legendas editadas e estilos personalizados na nuvem.
         </p>
         <div className="flex items-center justify-center gap-3 pt-2">
           <button

@@ -7,25 +7,13 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import type {
-  DetectedPause,
-  StyleConfig,
-  SubtitleSegment,
-  TransitionConfig,
-  TransitionPoint,
-  TransitionType,
-} from '../types';
-import {
-  formatTimeDisplay,
-  getActivePointTransition,
-  getActiveWordChunk,
-} from '../utils/subtitles';
-import { computeTransitionVisual } from '../utils/transitionEffects';
+import type { StyleConfig, SubtitleSegment } from '../types';
+import { formatTimeDisplay, getActiveWordChunk } from '../utils/subtitles';
 import { SubtitleOverlay } from './SubtitleOverlay';
 import { TimelineTracks } from './TimelineTracks';
 
 interface VideoPlayerShellProps {
-  step: 1 | 2 | 3;
+  step: 1 | 2;
   videoUrl: string | null;
   videoFileName: string | null;
   duration: number;
@@ -33,11 +21,6 @@ interface VideoPlayerShellProps {
   isPlaying: boolean;
   segments: SubtitleSegment[];
   styleConfig: StyleConfig;
-  transitionConfig: TransitionConfig;
-  transitionPoints: TransitionPoint[];
-  pauses?: DetectedPause[];
-  selectedTransitionId?: string | null;
-  previewTransitionTrigger?: { type: TransitionType; nonce: number } | null;
   clipEndTime?: number | null;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   onSelectFile?: (file: File) => void;
@@ -47,8 +30,6 @@ interface VideoPlayerShellProps {
   onLoadedMetadata: (duration: number) => void;
   onPlayStateChange: (playing: boolean) => void;
   onClipPlaybackComplete?: () => void;
-  onSelectTransitionPoint?: (point: TransitionPoint) => void;
-  onAddTransitionAtPlayhead?: () => void;
   onAddSubtitleAtPlayhead?: () => void;
   onResizeSegmentStart?: () => void;
   onResizeSegment?: (segmentId: string, nextStart: number, nextEnd: number) => void;
@@ -63,11 +44,6 @@ export function VideoPlayerShell({
   isPlaying,
   segments,
   styleConfig,
-  transitionConfig,
-  transitionPoints,
-  pauses = [],
-  selectedTransitionId,
-  previewTransitionTrigger,
   clipEndTime = null,
   videoRef,
   onSelectFile,
@@ -77,8 +53,6 @@ export function VideoPlayerShell({
   onLoadedMetadata,
   onPlayStateChange,
   onClipPlaybackComplete,
-  onSelectTransitionPoint,
-  onAddTransitionAtPlayhead,
   onAddSubtitleAtPlayhead,
   onResizeSegmentStart,
   onResizeSegment,
@@ -88,34 +62,10 @@ export function VideoPlayerShell({
   const [isMuted, setIsMuted] = useState(false);
   const [videoRatio, setVideoRatio] = useState<number>(9 / 16);
   const [liveTime, setLiveTime] = useState(currentTime);
-  const [manualPreview, setManualPreview] = useState<{
-    type: TransitionType;
-    progress: number;
-  } | null>(null);
 
   useEffect(() => {
     setLiveTime(currentTime);
   }, [currentTime]);
-
-  useEffect(() => {
-    if (step !== 3 || !previewTransitionTrigger || !videoUrl) return;
-    let rafId = 0;
-    const durMs = Math.max(180, (transitionConfig.duration || 0.45) * 1000);
-    const startAt = performance.now();
-
-    const stepAnim = (now: number) => {
-      const p = (now - startAt) / durMs;
-      if (p >= 1) {
-        setManualPreview(null);
-        return;
-      }
-      setManualPreview({ type: previewTransitionTrigger.type, progress: p });
-      rafId = requestAnimationFrame(stepAnim);
-    };
-
-    rafId = requestAnimationFrame(stepAnim);
-    return () => cancelAnimationFrame(rafId);
-  }, [step, previewTransitionTrigger, videoUrl, transitionConfig.duration]);
 
   useEffect(() => {
     if (!isPlaying) return;
@@ -136,19 +86,6 @@ export function VideoPlayerShell({
           onClipPlaybackComplete?.();
           return;
         }
-        if (
-          step === 3 &&
-          transitionConfig.enabled &&
-          transitionConfig.mode === 'cut' &&
-          pauses.length > 0
-        ) {
-          for (const p of pauses) {
-            if (vid.currentTime > p.start + 0.08 && vid.currentTime < p.end - 0.08) {
-              vid.currentTime = p.end;
-              break;
-            }
-          }
-        }
         setLiveTime(vid.currentTime);
         onTimeSync(vid.currentTime);
       }
@@ -157,17 +94,7 @@ export function VideoPlayerShell({
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [
-    isPlaying,
-    step,
-    clipEndTime,
-    transitionConfig.enabled,
-    transitionConfig.mode,
-    pauses,
-    videoRef,
-    onTimeSync,
-    onClipPlaybackComplete,
-  ]);
+  }, [isPlaying, clipEndTime, videoRef, onTimeSync, onClipPlaybackComplete]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -182,41 +109,8 @@ export function VideoPlayerShell({
     e.target.value = '';
   };
 
-  // Step 1 shows NO subtitles and NO transitions
-  // Step 2 shows subtitles ONLY (NO transitions)
-  // Step 3 shows locked subtitles AND transitions
   const activeChunk =
-    step >= 2 ? getActiveWordChunk(segments, liveTime) : null;
-
-  let videoTransformStyle: React.CSSProperties = {};
-  let flashOpacity = 0;
-
-  if (step === 3) {
-    if (manualPreview) {
-      const visual = computeTransitionVisual(
-        manualPreview.type,
-        manualPreview.progress,
-        transitionConfig.intensity,
-      );
-      videoTransformStyle = visual.style;
-      flashOpacity = visual.flashOpacity;
-    } else {
-      const { activePoint, progress } = getActivePointTransition(
-        liveTime,
-        transitionPoints,
-        transitionConfig.enabled && transitionConfig.mode === 'transition',
-      );
-      if (activePoint) {
-        const visual = computeTransitionVisual(
-          activePoint.type,
-          progress,
-          activePoint.intensity,
-        );
-        videoTransformStyle = visual.style;
-        flashOpacity = visual.flashOpacity;
-      }
-    }
-  }
+    step === 2 ? getActiveWordChunk(segments, liveTime) : null;
 
   const isPortrait = videoRatio < 1;
 
@@ -313,16 +207,8 @@ export function VideoPlayerShell({
                       onTimeSync(t);
                     }
                   }}
-                  style={videoTransformStyle}
                   className="w-full h-full object-contain cursor-pointer select-none"
                 />
-
-                {flashOpacity > 0 && (
-                  <div
-                    className="pointer-events-none absolute inset-0 bg-white z-10"
-                    style={{ opacity: flashOpacity }}
-                  />
-                )}
 
                 {activeChunk && (
                   <SubtitleOverlay
@@ -396,18 +282,13 @@ export function VideoPlayerShell({
             </div>
           </div>
 
-          {/* Step-strict Timeline */}
           <TimelineTracks
             step={step}
             duration={duration}
             currentTime={liveTime}
             videoFileName={videoFileName}
             segments={segments}
-            transitionPoints={transitionPoints}
-            selectedTransitionId={selectedTransitionId}
             onSeek={onSeek}
-            onSelectTransitionPoint={onSelectTransitionPoint}
-            onAddTransitionAtPlayhead={onAddTransitionAtPlayhead}
             onAddSubtitleAtPlayhead={onAddSubtitleAtPlayhead}
             onResizeSegmentStart={onResizeSegmentStart}
             onResizeSegment={onResizeSegment}

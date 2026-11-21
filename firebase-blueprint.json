@@ -23,13 +23,7 @@
           "format": "email",
           "minLength": 3,
           "maxLength": 254,
-          "description": "Endereço de e-mail verificado do usuário (quando autenticado com Google)."
-        },
-        "phoneNumber": {
-          "type": "string",
-          "minLength": 4,
-          "maxLength": 32,
-          "description": "Número de telefone verificado via SMS (quando autenticado por celular)."
+          "description": "Endereço de e-mail do usuário (Google ou E-mail/Senha)."
         },
         "photoURL": {
           "type": "string",
@@ -39,12 +33,12 @@
         "role": {
           "type": "string",
           "enum": ["user", "admin"],
-          "description": "Papel do usuário; usuários de telefone são sempre user e apenas a conta admin via Google recebe admin."
+          "description": "Papel do usuário; apenas a conta admin autenticada via Google recebe admin."
         },
         "authProvider": {
           "type": "string",
-          "enum": ["google", "phone"],
-          "description": "Método de autenticação utilizado (google ou phone)."
+          "enum": ["google", "email"],
+          "description": "Método de autenticação utilizado (google ou email)."
         },
         "createdAt": {
           "type": "string",
@@ -57,7 +51,7 @@
           "description": "Timestamp da última atualização."
         }
       },
-      "required": ["uid", "displayName", "createdAt", "updatedAt"]
+      "required": ["uid", "displayName", "email", "createdAt", "updatedAt"]
     },
     "SubtitleProject": {
       "title": "SubtitleProject",
@@ -101,7 +95,7 @@
         },
         "styleConfig": {
           "type": "object",
-          "description": "Configurações visuais dos 4 estilos profissionais (preset, fonte, escala 50-150%, cores, posição vertical 5-95%)."
+          "description": "Configurações visuais dos 8 estilos profissionais (preset, fonte, escala 50-150%, cores, posição vertical 5-95%)."
         },
         "transitionConfig": {
           "type": "object",

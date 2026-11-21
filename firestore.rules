@@ -15,7 +15,7 @@ service cloud.firestore {
     function isVerified() {
       return isSignedIn() && (
         request.auth.token.email_verified == true
-        || ('phone_number' in request.auth.token && request.auth.token.phone_number != null)
+        || request.auth.token.firebase.sign_in_provider == 'password'
       );
     }
 
@@ -44,8 +44,8 @@ service cloud.firestore {
 
     // --- Validation Blueprints ---
     function isValidUserProfile(data, userId) {
-      return data.keys().hasAll(['uid', 'displayName', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'email', 'phoneNumber', 'photoURL', 'role', 'authProvider', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'role', 'authProvider', 'createdAt', 'updatedAt'])
         && data.uid is string
         && data.uid == request.auth.uid
         && data.uid == userId
@@ -53,11 +53,13 @@ service cloud.firestore {
         && data.displayName is string
         && data.displayName.size() >= 1
         && data.displayName.size() <= 120
-        && (!('email' in data) || data.email == null || (data.email is string && data.email.size() >= 3 && data.email.size() <= 254))
-        && (!('phoneNumber' in data) || data.phoneNumber == null || (data.phoneNumber is string && data.phoneNumber.size() >= 4 && data.phoneNumber.size() <= 32))
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && data.email == request.auth.token.email
         && (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 1000))
         && (!('role' in data) || data.role == 'user' || (data.role == 'admin' && isAdminCaller()))
-        && (!('authProvider' in data) || (data.authProvider in ['google', 'phone'] && (data.authProvider == 'google' || !('role' in data) || data.role == 'user')))
+        && (!('authProvider' in data) || (data.authProvider in ['google', 'email'] && (data.authProvider == 'google' || !('role' in data) || data.role == 'user')))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -66,7 +68,10 @@ service cloud.firestore {
       return cfg is map
         && cfg.keys().hasAll(['preset', 'fontFamily', 'fontScale', 'textColor', 'highlightColor', 'verticalPosition'])
         && cfg.keys().hasOnly(['preset', 'fontFamily', 'fontScale', 'textColor', 'highlightColor', 'verticalPosition'])
-        && cfg.preset in ['viral_impacto', 'neon_noturno', 'elegante_pregacao', 'caixa_destaque']
+        && cfg.preset in [
+          'viral_impacto', 'neon_noturno', 'elegante_pregacao', 'caixa_destaque',
+          'mrbeast_3d', 'cyber_glitch', 'fogo_turbo', 'cinema_blur'
+        ]
         && cfg.fontFamily is string && cfg.fontFamily.size() >= 1 && cfg.fontFamily.size() <= 80
         && cfg.fontScale is number && cfg.fontScale >= 50 && cfg.fontScale <= 150
         && cfg.textColor is string && cfg.textColor.size() >= 4 && cfg.textColor.size() <= 24
@@ -145,7 +150,7 @@ service cloud.firestore {
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'phoneNumber', 'photoURL', 'role', 'authProvider', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'role', 'authProvider', 'updatedAt']);
       allow delete: if isValidId(userId) && isOwner(userId);
     }
 

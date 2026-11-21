@@ -692,18 +692,18 @@ export function SubtitleEditorPanel({
           </div>
         )}
 
-        {/* Required Review Confirmation Gate before Step 3 */}
+        {/* Required Review Confirmation Gate before Export */}
         {segments.length > 0 && (
           <div className="px-4 py-3.5 bg-[#0D1017] border-t border-white/10 flex flex-wrap items-center justify-between gap-3">
             <div className="text-xs">
               {subtitlesReviewed ? (
                 <span className="inline-flex items-center gap-1.5 text-emerald-400 font-semibold">
                   <CheckCircle2 className="w-4 h-4" />
-                  Legendas revisadas e confirmadas! Clique em &ldquo;Continuar&rdquo; para ir às Transições.
+                  Legendas revisadas e confirmadas! Clique em &ldquo;Continuar&rdquo; para exportar o vídeo.
                 </span>
               ) : (
                 <span className="text-slate-300">
-                  Revise as palavras e confirme abaixo para liberar a Etapa 3 (onde o texto ficará travado).
+                  Revise as palavras e confirme abaixo para liberar a exportação do vídeo.
                 </span>
               )}
             </div>

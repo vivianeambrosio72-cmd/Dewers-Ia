@@ -4,17 +4,15 @@ import type { WizardStep } from '../types';
 
 interface WizardProgressBarProps {
   currentStep: WizardStep;
-  maxReachedStep: number; // 1, 2, 3, or 4 (export)
+  maxReachedStep: number; // 1, 2, or 3 (export)
   hasVideo: boolean;
   hasSubtitles: boolean;
-  subtitlesReviewed?: boolean;
   onSelectStep: (step: WizardStep) => void;
 }
 
-const STEPS: Array<{ id: 1 | 2 | 3; label: string }> = [
+const STEPS: Array<{ id: 1 | 2; label: string }> = [
   { id: 1, label: '1. Vídeo' },
   { id: 2, label: '2. Legendas' },
-  { id: 3, label: '3. Transições' },
 ];
 
 export function WizardProgressBar({
@@ -22,23 +20,20 @@ export function WizardProgressBar({
   maxReachedStep,
   hasVideo,
   hasSubtitles,
-  subtitlesReviewed = false,
   onSelectStep,
 }: WizardProgressBarProps) {
-  const currentNum = currentStep === 'export' ? 4 : currentStep;
+  const currentNum = currentStep === 'export' ? 3 : currentStep;
 
-  const isStepCompleted = (id: 1 | 2 | 3) => {
+  const isStepCompleted = (id: 1 | 2) => {
     if (id === 1) return currentNum > 1 && hasVideo;
     if (id === 2) return currentNum > 2 && hasSubtitles;
-    if (id === 3) return currentNum > 3;
     return false;
   };
 
-  const canNavigateTo = (id: 1 | 2 | 3) => {
+  const canNavigateTo = (id: 1 | 2) => {
     if (id === currentStep) return false;
     if (id === 1) return true;
     if (id === 2) return hasVideo && maxReachedStep >= 2;
-    if (id === 3) return hasVideo && hasSubtitles && subtitlesReviewed && maxReachedStep >= 3;
     return false;
   };
 
@@ -102,9 +97,8 @@ export function WizardProgressBar({
         </ol>
 
         <span className="text-xs text-slate-400 hidden sm:inline">
-          {currentStep === 1 && 'Etapa 1 de 3 · Carregue o vídeo'}
-          {currentStep === 2 && 'Etapa 2 de 3 · Ajuste estilo e texto das legendas'}
-          {currentStep === 3 && 'Etapa 3 de 3 · Defina transições nos pontos da timeline'}
+          {currentStep === 1 && 'Etapa 1 de 2 · Carregue o vídeo'}
+          {currentStep === 2 && 'Etapa 2 de 2 · Ajuste estilo e texto das legendas'}
           {currentStep === 'export' && 'Concluído · Baixe o vídeo final ou .SRT'}
         </span>
       </div>

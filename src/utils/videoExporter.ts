@@ -1,16 +1,9 @@
 import {
   PRESET_DEFINITIONS,
-  type DetectedPause,
   type StyleConfig,
   type SubtitleSegment,
-  type TransitionConfig,
-  type TransitionPoint,
 } from '../types';
-import {
-  getActivePointTransition,
-  getActiveWordChunk,
-  type ActiveWordChunk,
-} from './subtitles';
+import { getActiveWordChunk, type ActiveWordChunk } from './subtitles';
 
 export interface ExportResult {
   blob: Blob;
@@ -74,15 +67,21 @@ function drawSubtitlesOnCanvas(
   const scaleFactor = Math.max(0.65, width / 720);
   const fontSize = Math.round(presetMeta.baseFontSize * (style.fontScale / 100) * scaleFactor);
 
-  const isUppercase = preset === 'viral_impacto' || preset === 'neon_noturno';
+  const isUppercase =
+    preset === 'viral_impacto' ||
+    preset === 'neon_noturno' ||
+    preset === 'mrbeast_3d' ||
+    preset === 'cyber_glitch' ||
+    preset === 'fogo_turbo';
+
   const fontWeight =
-    preset === 'viral_impacto'
-      ? '800'
-      : preset === 'neon_noturno'
-        ? '700'
-        : preset === 'elegante_pregacao'
-          ? '600'
-          : '800';
+    preset === 'mrbeast_3d'
+      ? '900'
+      : preset === 'viral_impacto' || preset === 'caixa_destaque' || preset === 'cinema_blur'
+        ? '800'
+        : preset === 'neon_noturno' || preset === 'cyber_glitch' || preset === 'fogo_turbo'
+          ? '700'
+          : '600';
 
   const chunkElapsed = Math.max(0, currentTime - chunk.start);
   const activeWord =
@@ -92,8 +91,8 @@ function drawSubtitlesOnCanvas(
   let globalAlpha = 1;
   let offsetY = 0;
 
-  if (preset === 'viral_impacto') {
-    const t = Math.min(1, chunkElapsed / 0.15);
+  if (preset === 'viral_impacto' || preset === 'mrbeast_3d' || preset === 'fogo_turbo') {
+    const t = Math.min(1, chunkElapsed / 0.14);
     const eased = 1 - Math.pow(1 - t, 3);
     globalAlpha = eased;
     offsetY = (1 - eased) * 20 * scaleFactor;
@@ -104,8 +103,10 @@ function drawSubtitlesOnCanvas(
         ? 0.65 + 0.35 * Math.abs(Math.sin(chunkElapsed * 55))
         : 1;
     globalAlpha = Math.min(1, t * 1.4) * flicker;
-  } else if (preset === 'elegante_pregacao') {
-    globalAlpha = Math.min(1, chunkElapsed / 0.3);
+  } else if (preset === 'elegante_pregacao' || preset === 'cinema_blur') {
+    globalAlpha = Math.min(1, chunkElapsed / 0.26);
+  } else if (preset === 'cyber_glitch') {
+    globalAlpha = Math.min(1, chunkElapsed / 0.12);
   }
 
   ctx.save();
@@ -119,7 +120,12 @@ function drawSubtitlesOnCanvas(
     display: isUppercase ? w.text.toUpperCase() : w.text,
   }));
 
-  const letterSpacing = preset === 'neon_noturno' ? 2 * scaleFactor : 0;
+  const letterSpacing =
+    preset === 'neon_noturno'
+      ? 2 * scaleFactor
+      : preset === 'cyber_glitch' || preset === 'fogo_turbo'
+        ? 1.2 * scaleFactor
+        : 0;
   const measureWord = (txt: string) => {
     const base = ctx.measureText(txt).width;
     return base + Math.max(0, txt.length - 1) * letterSpacing;
@@ -150,7 +156,7 @@ function drawSubtitlesOnCanvas(
   const blockCenterY = height * (style.verticalPosition / 100) + offsetY;
   const startY = blockCenterY - totalBlockHeight / 2 + lineHeight / 2;
 
-  // Compute exact word bounding boxes for layout & Style 4 pill
+  // Compute exact word bounding boxes for layout & pill/backdrop effects
   const wordPositions: Array<{
     word: (typeof words)[number];
     globalIdx: number;
@@ -176,6 +182,23 @@ function drawSubtitlesOnCanvas(
       gIdx++;
     });
   });
+
+  // Cinema Blur frosted dark bar backdrop
+  if (preset === 'cinema_blur') {
+    const padX = 22 * scaleFactor;
+    const padY = 12 * scaleFactor;
+    const radius = 14 * scaleFactor;
+    const bx = width / 2 - widestLine / 2 - padX;
+    const by = startY - lineHeight / 2 - padY;
+    const bw = widestLine + padX * 2;
+    const bh = totalBlockHeight + padY * 2;
+    ctx.fillStyle = 'rgba(9, 11, 16, 0.68)';
+    drawRoundedRect(ctx, bx, by, bw, bh, radius);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+    ctx.lineWidth = Math.max(1, scaleFactor);
+    ctx.stroke();
+  }
 
   // Style 4: Container rounded box rgba(0,0,0,0.65), radius 16px, padding 12px 20px + sliding gradient pill
   if (preset === 'caixa_destaque') {
@@ -262,21 +285,46 @@ function drawSubtitlesOnCanvas(
     const isActive = pos.globalIdx === chunk.activeWordIndex;
     ctx.save();
 
+    const cx = pos.x + pos.w / 2;
+    const cy = pos.y;
+
     if (isActive && preset === 'viral_impacto') {
       const popT = Math.min(1, wordElapsed / 0.15);
       const popScale = 1 + 0.2 * Math.sin(popT * Math.PI);
-      ctx.translate(pos.x + pos.w / 2, pos.y);
+      ctx.translate(cx, cy);
       ctx.scale(popScale, popScale);
-      ctx.translate(-(pos.x + pos.w / 2), -pos.y);
+      ctx.translate(-cx, -cy);
+    } else if (preset === 'mrbeast_3d') {
+      const popT = isActive ? Math.min(1, wordElapsed / 0.16) : 0;
+      const popScale = isActive ? 1.06 + 0.18 * Math.sin(popT * Math.PI) : 1;
+      ctx.translate(cx, cy);
+      ctx.transform(1, 0, -0.12, 1, 0, 0);
+      ctx.scale(popScale, popScale);
+      ctx.translate(-cx, -cy);
+    } else if (isActive && preset === 'cyber_glitch') {
+      const p = Math.min(1, wordElapsed / 0.12);
+      const jitterX = p < 1 ? Math.sin(wordElapsed * 140) * 3 * scaleFactor * (1 - p) : 0;
+      ctx.translate(cx + jitterX, cy);
+      ctx.transform(1, 0, -0.14, 1, 0, 0);
+      ctx.scale(1.06, 1.06);
+      ctx.translate(-cx, -cy);
+    } else if (isActive && preset === 'fogo_turbo') {
+      const popT = Math.min(1, wordElapsed / 0.16);
+      const popScale = 1.04 + 0.16 * Math.sin(popT * Math.PI);
+      ctx.translate(cx, cy);
+      ctx.scale(popScale, popScale);
+      ctx.translate(-cx, -cy);
+    } else if (isActive && preset === 'cinema_blur') {
+      ctx.translate(cx, cy);
+      ctx.scale(1.09, 1.09);
+      ctx.translate(-cx, -cy);
     }
 
     if (preset === 'viral_impacto') {
       ctx.lineJoin = 'round';
       ctx.miterLimit = 2;
-      // Drop shadow 0 4px 0 #000000
       ctx.fillStyle = '#000000';
       drawTextRun(pos.word.display, pos.x, pos.y + 4 * scaleFactor, false);
-      // 6px black outline
       ctx.strokeStyle = '#000000';
       ctx.lineWidth = Math.max(6, 6 * scaleFactor);
       drawTextRun(pos.word.display, pos.x, pos.y, true);
@@ -306,6 +354,84 @@ function drawSubtitlesOnCanvas(
         ctx.lineTo(pos.x + pos.w, pos.y + fontSize * 0.52);
         ctx.stroke();
       }
+    } else if (preset === 'mrbeast_3d') {
+      ctx.lineJoin = 'round';
+      ctx.miterLimit = 2;
+      ctx.fillStyle = '#000000';
+      for (const step of [6, 4, 2]) {
+        drawTextRun(pos.word.display, pos.x, pos.y + step * scaleFactor, false);
+      }
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = Math.max(6, 7 * scaleFactor);
+      drawTextRun(pos.word.display, pos.x, pos.y, true);
+      ctx.fillStyle = isActive ? style.highlightColor : style.textColor;
+      drawTextRun(pos.word.display, pos.x, pos.y, false);
+    } else if (preset === 'cyber_glitch') {
+      const accent = style.highlightColor || '#00F0FF';
+      if (isActive) {
+        const padX = fontSize * 0.24;
+        const padY = fontSize * 0.14;
+        const bx = pos.x - padX;
+        const by = pos.y - fontSize * 0.54 - padY;
+        const bw = pos.w + padX * 2;
+        const bh = fontSize * 1.08 + padY * 2;
+        ctx.save();
+        ctx.shadowColor = accent;
+        ctx.shadowBlur = 16 * scaleFactor;
+        ctx.fillStyle = accent;
+        drawRoundedRect(ctx, bx, by, bw, bh, 5 * scaleFactor);
+        ctx.fill();
+        ctx.restore();
+        ctx.fillStyle = '#05070B';
+        drawTextRun(pos.word.display, pos.x, pos.y, false);
+      } else {
+        ctx.fillStyle = '#00F0FF';
+        drawTextRun(pos.word.display, pos.x - 3 * scaleFactor, pos.y, false);
+        ctx.fillStyle = '#FF0055';
+        drawTextRun(pos.word.display, pos.x + 3 * scaleFactor, pos.y, false);
+        ctx.fillStyle = style.textColor;
+        drawTextRun(pos.word.display, pos.x, pos.y, false);
+      }
+    } else if (preset === 'fogo_turbo') {
+      const fireAccent = style.highlightColor || '#FF7A00';
+      ctx.lineJoin = 'round';
+      ctx.miterLimit = 2;
+      if (isActive) {
+        ctx.shadowColor = fireAccent;
+        ctx.shadowBlur = 18 * scaleFactor;
+      }
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = Math.max(5, 5.5 * scaleFactor);
+      drawTextRun(pos.word.display, pos.x, pos.y, true);
+      if (isActive) {
+        const grad = ctx.createLinearGradient(
+          pos.x,
+          pos.y - fontSize * 0.5,
+          pos.x,
+          pos.y + fontSize * 0.5,
+        );
+        grad.addColorStop(0, '#FFFFFF');
+        grad.addColorStop(0.45, '#FFE600');
+        grad.addColorStop(1, fireAccent);
+        ctx.fillStyle = grad;
+      } else {
+        ctx.fillStyle = style.textColor;
+      }
+      drawTextRun(pos.word.display, pos.x, pos.y, false);
+    } else if (preset === 'cinema_blur') {
+      const gold = style.highlightColor || '#FFB800';
+      if (isActive) {
+        ctx.filter = 'none';
+        ctx.globalAlpha = globalAlpha;
+        ctx.shadowColor = gold;
+        ctx.shadowBlur = 16 * scaleFactor;
+        ctx.fillStyle = gold;
+      } else {
+        ctx.filter = `blur(${(1.2 * scaleFactor).toFixed(1)}px)`;
+        ctx.globalAlpha = globalAlpha * 0.48;
+        ctx.fillStyle = style.textColor;
+      }
+      drawTextRun(pos.word.display, pos.x, pos.y, false);
     } else {
       // caixa_destaque
       ctx.fillStyle = '#FFFFFF';
@@ -318,164 +444,10 @@ function drawSubtitlesOnCanvas(
   ctx.restore();
 }
 
-function drawVideoWithTransition(
-  ctx: CanvasRenderingContext2D,
-  video: HTMLVideoElement,
-  width: number,
-  height: number,
-  transition: TransitionConfig,
-  transitionPoints: TransitionPoint[],
-  currentTime: number,
-) {
-  ctx.fillStyle = '#000000';
-  ctx.fillRect(0, 0, width, height);
-
-  const { activePoint, progress } = getActivePointTransition(
-    currentTime,
-    transitionPoints,
-    transition.enabled && transition.mode === 'transition',
-  );
-
-  if (!activePoint) {
-    ctx.drawImage(video, 0, 0, width, height);
-    return;
-  }
-
-  const mult =
-    activePoint.intensity === 'low' ? 0.6 : activePoint.intensity === 'high' ? 1.45 : 1.0;
-
-  const p = Math.min(1, Math.max(0, progress));
-  const pulse = Math.sin(p * Math.PI);
-
-  ctx.save();
-  switch (activePoint.type) {
-    case 'fade': {
-      const minAlpha = Math.max(0.12, 1 - 0.78 * mult);
-      ctx.globalAlpha = 1 - pulse * (1 - minAlpha);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'zoom': {
-      const zoomAmount = 1 + 0.16 * mult * pulse;
-      ctx.translate(width / 2, height / 2);
-      ctx.scale(zoomAmount, zoomAmount);
-      ctx.translate(-width / 2, -height / 2);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'slide': {
-      const dir = p < 0.5 ? -p * 2 : (1 - p) * 2;
-      ctx.translate(dir * width * 0.18 * mult, 0);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'glitch': {
-      const jitterX = Math.sin(p * 42) * 14 * mult * pulse;
-      const jitterY = Math.cos(p * 34) * 6 * mult * pulse;
-      ctx.drawImage(video, jitterX, jitterY, width, height);
-      ctx.globalAlpha = 0.35 * pulse;
-      ctx.globalCompositeOperation = 'screen';
-      ctx.drawImage(video, -jitterX * 1.4, 0, width, height);
-      break;
-    }
-    case 'whip': {
-      const dir = p < 0.5 ? -p * 2 : (1 - p) * 2;
-      ctx.filter = `blur(${(6 * mult * pulse).toFixed(1)}px)`;
-      ctx.translate(dir * width * 0.42 * mult, 0);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'cube_zoom': {
-      const scaleX = Math.max(0.25, Math.abs(Math.cos((p - 0.5) * Math.PI * 0.85)));
-      const scaleY = 1 + 0.14 * mult * pulse;
-      ctx.translate(width / 2, height / 2);
-      ctx.scale(scaleX, scaleY);
-      ctx.translate(-width / 2, -height / 2);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'flip': {
-      const scaleX = Math.cos(p * Math.PI * 2);
-      const scaleY = 1 - 0.14 * pulse;
-      ctx.translate(width / 2, height / 2);
-      ctx.scale(scaleX, scaleY);
-      ctx.translate(-width / 2, -height / 2);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'heartbeat': {
-      const beat1 = Math.exp(-Math.pow((p - 0.25) / 0.11, 2));
-      const beat2 = Math.exp(-Math.pow((p - 0.62) / 0.13, 2)) * 0.78;
-      const scale = 1 + 0.16 * mult * Math.max(beat1, beat2);
-      ctx.translate(width / 2, height / 2);
-      ctx.scale(scale, scale);
-      ctx.translate(-width / 2, -height / 2);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'flash': {
-      ctx.drawImage(video, 0, 0, width, height);
-      const flashAlpha = Math.min(0.92, 0.78 * mult * Math.pow(pulse, 1.4));
-      ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha.toFixed(3)})`;
-      ctx.fillRect(0, 0, width, height);
-      break;
-    }
-    case 'spin': {
-      const scale = 1 - 0.22 * pulse;
-      ctx.translate(width / 2, height / 2);
-      ctx.rotate(p * Math.PI * 2);
-      ctx.scale(scale, scale);
-      ctx.translate(-width / 2, -height / 2);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'shake': {
-      const sx = Math.sin(p * 55) * 12 * mult * pulse;
-      const sy = Math.cos(p * 47) * 9 * mult * pulse;
-      const rot = (Math.sin(p * 38) * 3.5 * mult * pulse * Math.PI) / 180;
-      ctx.translate(width / 2 + sx, height / 2 + sy);
-      ctx.rotate(rot);
-      ctx.scale(1 + 0.06 * pulse, 1 + 0.06 * pulse);
-      ctx.translate(-width / 2, -height / 2);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'blur': {
-      ctx.filter = `blur(${(10 * mult * pulse).toFixed(1)}px)`;
-      ctx.globalAlpha = Math.max(0.45, 1 - 0.35 * pulse);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'wipe': {
-      const ratio = p < 0.5 ? p * 2 : (1 - p) * 2;
-      const cropW = Math.max(width * 0.15, width * (1 - ratio * 0.85 * mult));
-      ctx.beginPath();
-      ctx.rect(0, 0, cropW, height);
-      ctx.clip();
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-    case 'bounce': {
-      const bounceWave = Math.abs(Math.sin(p * Math.PI * 2.5)) * (1 - p);
-      const ty = -height * 0.04 * mult * bounceWave;
-      const scale = 1 + 0.1 * mult * bounceWave;
-      ctx.translate(width / 2, height / 2 + ty);
-      ctx.scale(scale, scale);
-      ctx.translate(-width / 2, -height / 2);
-      ctx.drawImage(video, 0, 0, width, height);
-      break;
-    }
-  }
-  ctx.restore();
-}
-
 export async function exportVideoWithBurnedSubtitles(params: {
   videoUrl: string;
   segments: SubtitleSegment[];
   style: StyleConfig;
-  transition: TransitionConfig;
-  transitionPoints: TransitionPoint[];
-  pauses: DetectedPause[];
   onProgress: (percent: number) => void;
   signal?: AbortSignal;
 }): Promise<ExportResult> {
@@ -483,9 +455,6 @@ export async function exportVideoWithBurnedSubtitles(params: {
     videoUrl,
     segments,
     style,
-    transition,
-    transitionPoints,
-    pauses,
     onProgress,
     signal,
   } = params;
@@ -600,18 +569,10 @@ export async function exportVideoWithBurnedSubtitles(params: {
     const renderLoop = () => {
       if (aborted) return;
 
-      // Auto-cut long pauses if mode === 'cut'
-      if (transition.enabled && transition.mode === 'cut' && pauses.length > 0) {
-        for (const p of pauses) {
-          if (video.currentTime > p.start + 0.08 && video.currentTime < p.end - 0.08) {
-            video.currentTime = p.end;
-            break;
-          }
-        }
-      }
-
       const t = video.currentTime;
-      drawVideoWithTransition(ctx, video, width, height, transition, transitionPoints, t);
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(video, 0, 0, width, height);
 
       const activeChunk = getActiveWordChunk(segments, t);
       drawSubtitlesOnCanvas(ctx, width, height, activeChunk, t, style, pillTracker);
