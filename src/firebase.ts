@@ -247,7 +247,10 @@ export function mapAuthErrorToPortuguese(error: unknown): string {
     return 'Login por e-mail não está ativado no Firebase. Avise o administrador.';
   }
   if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
-    return 'Este endereço não está autorizado no Firebase.';
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    return host
+      ? `O domínio "${host}" não está autorizado no Firebase Authentication.`
+      : 'Este endereço não está autorizado no Firebase.';
   }
   if (code === 'auth/network-request-failed' || msg.includes('network-request-failed')) {
     return 'Sem conexão. Verifique a internet.';

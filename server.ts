@@ -212,7 +212,14 @@ async function startServer() {
   app.use(express.json({ limit: '4mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', service: 'dewers-ia' });
+    res.json({
+      status: 'ok',
+      service: 'dewers-ia',
+      platform: 'node',
+      maxUploadBytes: MAX_FILE_SIZE_BYTES,
+      chunkSupported: true,
+      hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+    });
   });
 
   const INLINE_MAX_BYTES = 18 * 1024 * 1024; // 18 MB inline fast path
@@ -824,6 +831,43 @@ async function startServer() {
   );
 
   if (process.env.NODE_ENV !== 'production') {
+    if (process.env.DISABLE_HMR === 'true') {
+      app.get('/manifest.webmanifest', (_req: Request, res: Response) => {
+        res.type('application/manifest+json').json({
+          id: '/',
+          name: 'DEWES IA',
+          short_name: 'DEWES IA',
+          description: 'Legendas automáticas com IA',
+          start_url: '/',
+          scope: '/',
+          display: 'standalone',
+          orientation: 'any',
+          lang: 'pt-BR',
+          background_color: '#0B0B12',
+          theme_color: '#8A2BE2',
+          icons: [
+            {
+              src: '/pwa-192x192.png',
+              sizes: '192x192',
+              type: 'image/png',
+              purpose: 'any',
+            },
+            {
+              src: '/pwa-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'any',
+            },
+            {
+              src: '/pwa-maskable-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'maskable',
+            },
+          ],
+        });
+      });
+    }
     const vite = await createViteServer({
       server: {
         middlewareMode: true,

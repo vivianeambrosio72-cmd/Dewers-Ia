@@ -2,7 +2,10 @@ import React, { useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
+  Copy,
+  ExternalLink,
   Eye,
   EyeOff,
   Loader2,
@@ -11,6 +14,7 @@ import {
 } from 'lucide-react';
 import {
   extractFirebaseErrorCode,
+  firebaseRuntimeConfig,
   mapAuthErrorToPortuguese,
   recordLastFirebaseError,
   registerWithEmail,
@@ -42,11 +46,14 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const [resetLoading, setResetLoading] = useState(false);
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [unauthorizedHost, setUnauthorizedHost] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const submitInFlightRef = useRef(false);
 
   const handleGoogleLogin = async () => {
     setErrorMsg(null);
+    setUnauthorizedHost(null);
     setInfoMsg(null);
     setGoogleLoading(true);
     try {
@@ -56,6 +63,11 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       const code = extractFirebaseErrorCode(err);
       if (code !== 'auth/popup-closed-by-user') {
         recordLastFirebaseError(err, 'google-login');
+      }
+      if (code === 'auth/unauthorized-domain') {
+        setUnauthorizedHost(
+          typeof window !== 'undefined' ? window.location.hostname : '',
+        );
       }
       const msg = mapAuthErrorToPortuguese(err);
       if (msg) setErrorMsg(msg);
@@ -67,6 +79,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const handleSwitchMode = (nextMode: EmailAuthMode) => {
     setMode(nextMode);
     setErrorMsg(null);
+    setUnauthorizedHost(null);
     setInfoMsg(null);
     setConfirmPassword('');
   };
@@ -76,6 +89,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     if (submitInFlightRef.current) return;
 
     setErrorMsg(null);
+    setUnauthorizedHost(null);
     setInfoMsg(null);
 
     const trimmedEmail = email.trim();
@@ -119,6 +133,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const handlePasswordReset = async () => {
     if (resetLoading || emailLoading) return;
     setErrorMsg(null);
+    setUnauthorizedHost(null);
     setInfoMsg(null);
 
     const trimmedEmail = email.trim();
@@ -189,10 +204,65 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           {errorMsg && (
             <div
               role="alert"
-              className="mb-5 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-200 flex items-start gap-2.5 leading-relaxed"
+              className="mb-5 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-200 space-y-2.5 leading-relaxed"
             >
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              <span>{errorMsg}</span>
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span>{errorMsg}</span>
+              </div>
+
+              {unauthorizedHost !== null && (
+                <div className="pt-2 border-t border-rose-500/20 space-y-2 text-[11px] text-rose-100/90">
+                  <p>
+                    Adicione este domínio em{' '}
+                    <strong>
+                      Firebase Console → Authentication → Configurações → Domínios autorizados
+                    </strong>
+                    :
+                  </p>
+                  {unauthorizedHost && (
+                    <div className="flex items-center justify-between gap-2 bg-black/35 border border-rose-400/25 rounded-lg px-2.5 py-1.5">
+                      <span className="font-mono text-white truncate">
+                        {unauthorizedHost}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(unauthorizedHost);
+                            setCopiedDomain(true);
+                            window.setTimeout(() => setCopiedDomain(false), 1800);
+                          } catch {
+                            // ignore clipboard error
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-[10px] font-semibold text-white shrink-0 transition-colors"
+                      >
+                        {copiedDomain ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-400" />
+                            Copiado
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            Copiar
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                  <a
+                    href={`https://console.firebase.google.com/project/${firebaseRuntimeConfig.projectId}/authentication/settings`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-purple-300 hover:text-purple-200 underline underline-offset-2"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Abrir Domínios autorizados ({firebaseRuntimeConfig.projectId})
+                  </a>
+                </div>
+              )}
             </div>
           )}
 

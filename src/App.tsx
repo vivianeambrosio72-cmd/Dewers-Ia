@@ -405,7 +405,11 @@ export default function App() {
       setTranscribeProgress(5);
       setTranscribeStage('Conectando ao servidor de transcrição...');
 
-      // Verify /api/health first so proxy/auth/static-host issues are caught immediately
+      let serverMaxUploadBytes = 100 * 1024 * 1024;
+      let serverChunkSupported = true;
+      let serverPlatform = 'node';
+
+      // Verify /api/health first so proxy/auth/static-host/Vercel limits are caught immediately
       try {
         const healthRes = await fetch('/api/health', {
           method: 'GET',
@@ -415,8 +419,15 @@ export default function App() {
         });
         const healthText = await healthRes.text();
         let healthOk = false;
+        let parsedHealth: {
+          status?: string;
+          platform?: string;
+          maxUploadBytes?: number;
+          chunkSupported?: boolean;
+          hasGeminiKey?: boolean;
+        } = {};
         try {
-          const parsedHealth = JSON.parse(healthText || '{}');
+          parsedHealth = JSON.parse(healthText || '{}');
           healthOk = healthRes.ok && parsedHealth?.status === 'ok';
         } catch {
           healthOk = false;
@@ -425,6 +436,23 @@ export default function App() {
           throw new Error(
             parseServerError(healthRes.status, healthText, 'api-health'),
           );
+        }
+        if (parsedHealth.hasGeminiKey === false) {
+          throw new Error(
+            'Chave da API Gemini (GEMINI_API_KEY) não configurada neste servidor. Adicione GEMINI_API_KEY nas Environment Variables da Vercel e faça um novo deploy.',
+          );
+        }
+        if (
+          typeof parsedHealth.maxUploadBytes === 'number' &&
+          parsedHealth.maxUploadBytes > 0
+        ) {
+          serverMaxUploadBytes = parsedHealth.maxUploadBytes;
+        }
+        if (typeof parsedHealth.chunkSupported === 'boolean') {
+          serverChunkSupported = parsedHealth.chunkSupported;
+        }
+        if (typeof parsedHealth.platform === 'string') {
+          serverPlatform = parsedHealth.platform;
         }
       } catch (healthErr) {
         setIsTranscribing(false);
@@ -440,7 +468,13 @@ export default function App() {
       }
 
       setTranscribeStage('Preparando áudio do vídeo...');
-      const prepared = await prepareAudioForTranscription(videoFile);
+      const maxAudioWavBytes = serverChunkSupported
+        ? 15 * 1024 * 1024
+        : Math.max(1024 * 1024, Math.floor(serverMaxUploadBytes * 0.9));
+      const prepared = await prepareAudioForTranscription(
+        videoFile,
+        maxAudioWavBytes,
+      );
       if (prepared.isSilent) {
         setIsTranscribing(false);
         setTranscribeProgress(0);
@@ -453,8 +487,26 @@ export default function App() {
       }
 
       const uploadTargetFile = prepared.audioFile ?? videoFile;
-      const CHUNK_THRESHOLD_BYTES = 16 * 1024 * 1024; // 16 MB
-      const JSON_FALLBACK_MAX_BYTES = 12 * 1024 * 1024; // 12 MB raw -> ~16 MB base64
+      if (!serverChunkSupported && uploadTargetFile.size > serverMaxUploadBytes) {
+        setIsTranscribing(false);
+        setTranscribeProgress(0);
+        const limitMb = Math.max(1, Math.round(serverMaxUploadBytes / (1024 * 1024)));
+        setAlert({
+          type: 'error',
+          message:
+            serverPlatform === 'vercel'
+              ? `Na Vercel, o envio direto aceita até ${limitMb} MB e não foi possível comprimir o áudio deste vídeo abaixo desse limite no navegador. Envie um vídeo MP4 mais curto (até ~3 minutos).`
+              : `O arquivo ultrapassou o limite de ${limitMb} MB aceito pelo servidor.`,
+        });
+        return;
+      }
+
+      const CHUNK_THRESHOLD_BYTES = serverChunkSupported
+        ? 16 * 1024 * 1024
+        : serverMaxUploadBytes + 1;
+      const JSON_FALLBACK_MAX_BYTES = serverChunkSupported
+        ? 12 * 1024 * 1024
+        : Math.floor(serverMaxUploadBytes * 0.72);
       const CHUNK_SIZE_BYTES = 4 * 1024 * 1024; // 4 MB chunks (safe under Cloud Run 32 MB limit)
       let aiTicker: number | undefined;
 

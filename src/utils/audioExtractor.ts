@@ -47,6 +47,7 @@ function encodeMonoWav(samples: Float32Array, sampleRate: number): Blob {
  */
 export async function prepareAudioForTranscription(
   file: File,
+  maxWavBytes: number = 15 * 1024 * 1024,
 ): Promise<PreparedAudioResult> {
   if (file.size > MAX_CLIENT_DECODE_BYTES) {
     return { isSilent: false, audioFile: null };
@@ -80,24 +81,34 @@ export async function prepareAudioForTranscription(
       return { isSilent: true, audioFile: null };
     }
 
-    // Downsample to 16 kHz mono WAV if supported and reasonably sized (<= 15 MB WAV ~ 7.5 min)
-    const targetRate = 16000;
-    const targetLength = Math.max(1, Math.ceil(decoded.duration * targetRate));
-    if (
-      typeof OfflineAudioContext === 'undefined' ||
-      targetLength * 2 + 44 > 15 * 1024 * 1024
-    ) {
+    if (typeof OfflineAudioContext === 'undefined') {
       return { isSilent: false, audioFile: null };
     }
 
-    const offlineCtx = new OfflineAudioContext(1, targetLength, targetRate);
+    // Choose highest speech sample rate that keeps the mono WAV under maxWavBytes
+    const candidateRates = [16000, 12000, 10000, 8000];
+    let selectedRate: number | null = null;
+    for (const rate of candidateRates) {
+      const len = Math.max(1, Math.ceil(decoded.duration * rate));
+      if (len * 2 + 44 <= maxWavBytes) {
+        selectedRate = rate;
+        break;
+      }
+    }
+
+    if (!selectedRate) {
+      return { isSilent: false, audioFile: null };
+    }
+
+    const targetLength = Math.max(1, Math.ceil(decoded.duration * selectedRate));
+    const offlineCtx = new OfflineAudioContext(1, targetLength, selectedRate);
     const source = offlineCtx.createBufferSource();
     source.buffer = decoded;
     source.connect(offlineCtx.destination);
     source.start(0);
     const rendered = await offlineCtx.startRendering();
     const monoSamples = rendered.getChannelData(0);
-    const wavBlob = encodeMonoWav(monoSamples, targetRate);
+    const wavBlob = encodeMonoWav(monoSamples, selectedRate);
 
     const baseName = file.name.replace(/\.[^.]+$/, '') || 'audio';
     const wavFile = new File([wavBlob], `${baseName}.wav`, {
