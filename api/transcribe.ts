@@ -12,7 +12,6 @@ export const config = {
   api: {
     bodyParser: false,
   },
-  maxDuration: 60,
 };
 
 const upload = multer({

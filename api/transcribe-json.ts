@@ -7,10 +7,6 @@ import {
   type VercelResponse,
 } from './_lib/transcribeCore.js';
 
-export const config = {
-  maxDuration: 60,
-};
-
 export default async function handler(
   req: VercelRequest,
   res: VercelResponse,
