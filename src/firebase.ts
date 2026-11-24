@@ -11,12 +11,6 @@ import {
   signOut,
   type User,
 } from 'firebase/auth';
-import {
-  doc,
-  getDocFromServer,
-  getFirestore,
-  initializeFirestore,
-} from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 export const ADMIN_EMAIL = 'vivianeambrosio72@gmail.com';
@@ -35,19 +29,6 @@ export interface LastFirebaseErrorRecord {
 }
 
 const app = initializeApp(firebaseConfig);
-function createFirestoreClient() {
-  try {
-    return initializeFirestore(
-      app,
-      { experimentalForceLongPolling: true },
-      firebaseConfig.firestoreDatabaseId,
-    );
-  } catch {
-    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
-  }
-}
-
-export const db = createFirestoreClient();
 export const auth = getAuth(app);
 auth.languageCode = 'pt';
 
@@ -121,81 +102,6 @@ export function clearLastFirebaseError(): void {
     // ignore
   }
 }
-
-export enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-export interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-    tenantId?: string | null;
-    providerInfo?: {
-      providerId?: string | null;
-      email?: string | null;
-    }[];
-  };
-}
-
-export function handleFirestoreError(
-  error: unknown,
-  operationType: OperationType,
-  path: string | null,
-): never {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
-          providerId: provider.providerId,
-          email: provider.email,
-        })) || [],
-    },
-    operationType,
-    path,
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
-
-async function testConnection() {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-    if (msg.includes('client is offline') || msg.includes('unavailable')) {
-      await new Promise((resolve) => setTimeout(resolve, 900));
-      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (retryErr) {
-        const retryMsg =
-          retryErr instanceof Error ? retryErr.message.toLowerCase() : String(retryErr).toLowerCase();
-        if (retryMsg.includes('client is offline')) {
-          console.error('Verifique a configuração do Firebase: cliente offline.');
-        }
-      }
-    }
-  }
-}
-testConnection();
 
 export async function signInWithGoogle() {
   return signInWithPopup(auth, googleProvider);

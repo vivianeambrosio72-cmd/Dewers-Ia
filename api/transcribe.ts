@@ -6,7 +6,7 @@ import {
   VERCEL_MAX_UPLOAD_BYTES,
   type VercelRequest,
   type VercelResponse,
-} from './_lib/transcribeCore';
+} from './_lib/transcribeCore.js';
 
 export const config = {
   api: {

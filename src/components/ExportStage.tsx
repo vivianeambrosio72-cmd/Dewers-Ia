@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   Download,
   FileText,
-  Save,
   X,
 } from 'lucide-react';
 import type { StyleConfig, SubtitleSegment } from '../types';
@@ -18,12 +17,9 @@ interface ExportStageProps {
   hasVideo: boolean;
   isExporting: boolean;
   exportProgress: number;
-  isSavingProject: boolean;
-  isAuthenticated: boolean;
   onDownloadVideo: () => void;
   onCancelExport: () => void;
   onDownloadSrt: () => void;
-  onSaveProject: () => void;
   onBackToStep2: () => void;
 }
 
@@ -35,12 +31,9 @@ export function ExportStage({
   hasVideo,
   isExporting,
   exportProgress,
-  isSavingProject,
-  isAuthenticated,
   onDownloadVideo,
   onCancelExport,
   onDownloadSrt,
-  onSaveProject,
   onBackToStep2,
 }: ExportStageProps) {
   const totalWords = segments.reduce((acc, s) => acc + s.words.length, 0);
@@ -135,7 +128,7 @@ export function ExportStage({
           </button>
         </div>
 
-        {/* Footer Navigation & Cloud Save */}
+        {/* Footer Navigation */}
         <div className="pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-3">
           <button
             type="button"
@@ -145,20 +138,6 @@ export function ExportStage({
           >
             <ArrowLeft className="w-4 h-4" />
             Voltar para Legendas
-          </button>
-
-          <button
-            type="button"
-            disabled={isSavingProject || segments.length === 0}
-            onClick={onSaveProject}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#181C27] border border-white/10 text-xs font-semibold text-slate-100 hover:bg-white/10 disabled:opacity-40 transition-colors"
-          >
-            <Save className="w-3.5 h-3.5 text-amber-400" />
-            {isSavingProject
-              ? 'Salvando...'
-              : isAuthenticated
-                ? 'Salvar projeto na nuvem'
-                : 'Entrar e salvar projeto'}
           </button>
         </div>
       </div>

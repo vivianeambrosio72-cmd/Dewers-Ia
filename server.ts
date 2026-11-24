@@ -209,7 +209,14 @@ function sanitizeTranscription(payload: GeminiTranscriptionPayload) {
 async function startServer() {
   const app = express();
   const httpServer = http.createServer(app);
-  app.use(express.json({ limit: '4mb' }));
+  const defaultJsonParser = express.json({ limit: '4mb' });
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.path === '/api/transcribe-json') {
+      next();
+      return;
+    }
+    defaultJsonParser(req, res, next);
+  });
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({
@@ -819,6 +826,19 @@ async function startServer() {
     (err: unknown, req: Request, res: Response, next: NextFunction) => {
       if (req.path.startsWith('/api')) {
         if (!res.headersSent) {
+          const errObj = err as { status?: number; statusCode?: number; type?: string; message?: string };
+          if (
+            errObj?.status === 413 ||
+            errObj?.statusCode === 413 ||
+            errObj?.type === 'entity.too.large'
+          ) {
+            res.status(413).json({
+              error:
+                'O arquivo ultrapassou o limite aceito pelo servidor nesta requisição. Tente novamente ou envie um vídeo menor.',
+              code: 'FILE_TOO_LARGE',
+            });
+            return;
+          }
           res.status(500).json({
             error: `Erro interno no servidor: ${err instanceof Error ? err.message : String(err)}`,
             code: 'INTERNAL_SERVER_ERROR',

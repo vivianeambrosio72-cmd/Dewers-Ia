@@ -19,14 +19,7 @@ import {
   signOutUser,
 } from './firebase';
 import {
-  deleteSubtitleProject,
-  saveSubtitleProject,
-  subscribeUserProjects,
-  upsertUserProfile,
-} from './services/projectService';
-import {
   PRESET_DEFINITIONS,
-  type SavedProject,
   type StyleConfig,
   type SubtitleSegment,
   type SupportedLanguage,
@@ -51,7 +44,6 @@ import { VideoPlayerShell } from './components/VideoPlayerShell';
 import { SubtitleEditorPanel } from './components/SubtitleEditorPanel';
 import { StylePanel } from './components/StylePanel';
 import { ExportStage } from './components/ExportStage';
-import { ProjectsPanel } from './components/ProjectsPanel';
 import { LoginScreen } from './components/LoginScreen';
 import { AdminDiagnosticPanel } from './components/AdminDiagnosticPanel';
 import {
@@ -59,8 +51,6 @@ import {
   PWAInstallButton,
   PWAUpdateBanner,
 } from './components/PWABanners';
-
-type WorkspaceView = 'wizard' | 'projects';
 
 interface BannerAlert {
   type: 'error' | 'info' | 'success';
@@ -95,18 +85,13 @@ function readLocalDraft(): LocalDraftPayload | null {
 }
 
 export default function App() {
-  // Auth & Firestore
+  // Auth
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [projects, setProjects] = useState<SavedProject[]>([]);
-  const [projectsLoading, setProjectsLoading] = useState(false);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [isSavingProject, setIsSavingProject] = useState(false);
   const [showAdminDiag, setShowAdminDiag] = useState(false);
   const isAdmin = useMemo(() => isAdminUser(user), [user]);
 
-  // Navigation & Sequential Wizard
-  const [view, setView] = useState<WorkspaceView>('wizard');
+  // Sequential Wizard
   const [step, setStep] = useState<WizardStep>(1);
   const [maxReachedStep, setMaxReachedStep] = useState<number>(1);
 
@@ -157,44 +142,16 @@ export default function App() {
   const [alert, setAlert] = useState<BannerAlert | null>(null);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (nextUser) => {
+    const unsub = onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
       setAuthReady(true);
-      if (nextUser) {
-        try {
-          await upsertUserProfile(nextUser);
-        } catch (err) {
-          console.error('Erro ao sincronizar perfil:', err);
-        }
-      } else {
-        setProjects([]);
+      if (!nextUser) {
         setShowAdminDiag(false);
-        setView('wizard');
         setStep(1);
       }
     });
     return () => unsub();
   }, []);
-
-  useEffect(() => {
-    if (!authReady || !user) return;
-    setProjectsLoading(true);
-    const unsub = subscribeUserProjects(
-      user.uid,
-      (list) => {
-        setProjects(list);
-        setProjectsLoading(false);
-      },
-      (err) => {
-        setProjectsLoading(false);
-        setAlert({
-          type: 'error',
-          message: `Erro ao carregar projetos salvos: ${err.message}`,
-        });
-      },
-    );
-    return () => unsub();
-  }, [authReady, user]);
 
   useEffect(() => {
     return () => {
@@ -288,9 +245,7 @@ export default function App() {
       setVideoFile(file);
       setVideoUrl(nextUrl);
       setVideoFileName(file.name);
-      if (!activeProjectId) {
-        setProjectTitle(file.name.replace(/\.[^/.]+$/, '') || 'Novo vídeo curto');
-      }
+      setProjectTitle(file.name.replace(/\.[^/.]+$/, '') || 'Novo vídeo curto');
       setCurrentTime(0);
       setClipEndTime(null);
       setIsPlaying(false);
@@ -323,7 +278,7 @@ export default function App() {
         setMaxReachedStep(1);
       }
     },
-    [activeProjectId],
+    [],
   );
 
   const extractHtmlTitleHint = (htmlText: string): string => {
@@ -470,7 +425,7 @@ export default function App() {
       setTranscribeStage('Preparando áudio do vídeo...');
       const maxAudioWavBytes = serverChunkSupported
         ? 15 * 1024 * 1024
-        : Math.max(1024 * 1024, Math.floor(serverMaxUploadBytes * 0.9));
+        : Math.max(1024 * 1024, Math.floor(serverMaxUploadBytes * 0.85));
       const prepared = await prepareAudioForTranscription(
         videoFile,
         maxAudioWavBytes,
@@ -502,13 +457,99 @@ export default function App() {
       }
 
       const CHUNK_THRESHOLD_BYTES = serverChunkSupported
-        ? 16 * 1024 * 1024
+        ? 10 * 1024 * 1024
         : serverMaxUploadBytes + 1;
       const JSON_FALLBACK_MAX_BYTES = serverChunkSupported
         ? 12 * 1024 * 1024
         : Math.floor(serverMaxUploadBytes * 0.72);
-      const CHUNK_SIZE_BYTES = 4 * 1024 * 1024; // 4 MB chunks (safe under Cloud Run 32 MB limit)
+      const CHUNK_SIZE_BYTES = 3 * 1024 * 1024; // 3 MB chunks (safe under proxy body limits)
       let aiTicker: number | undefined;
+
+      const sendViaChunkedUpload = async (): Promise<{
+        segments: SubtitleSegment[];
+        detectedLanguage: string;
+      }> => {
+        const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const totalChunks = Math.ceil(uploadTargetFile.size / CHUNK_SIZE_BYTES);
+
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * CHUNK_SIZE_BYTES;
+          const end = Math.min(uploadTargetFile.size, start + CHUNK_SIZE_BYTES);
+          const chunkBlob = uploadTargetFile.slice(start, end);
+
+          const chunkForm = new FormData();
+          chunkForm.append('uploadId', uploadId);
+          chunkForm.append('chunkIndex', String(i));
+          chunkForm.append('chunk', chunkBlob, `part_${i}`);
+
+          setTranscribeStage(`Enviando vídeo (${i + 1}/${totalChunks})...`);
+          const chunkRes = await fetch('/api/transcribe/chunk', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { Accept: 'application/json' },
+            body: chunkForm,
+          });
+          const chunkText = await chunkRes.text();
+          if (!chunkRes.ok) {
+            throw new Error(
+              parseServerError(chunkRes.status, chunkText, 'chunk'),
+            );
+          }
+          setTranscribeProgress(
+            Math.max(10, Math.round(((i + 1) / totalChunks) * 45)),
+          );
+        }
+
+        setTranscribeProgress(50);
+        setTranscribeStage('Transcrevendo áudio com Gemini...');
+        aiTicker = window.setInterval(() => {
+          setTranscribeProgress((prev) => (prev < 92 ? prev + 2 : prev));
+        }, 700);
+
+        const completeRes = await fetch('/api/transcribe/complete', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            uploadId,
+            totalChunks,
+            fileName: uploadTargetFile.name,
+            mimeType: uploadTargetFile.type || 'video/mp4',
+            language: targetLang,
+            customDictionary: customDictionary.trim(),
+          }),
+        });
+        if (aiTicker) clearInterval(aiTicker);
+
+        const completeText = await completeRes.text();
+        let data: {
+          segments?: SubtitleSegment[];
+          detectedLanguage?: string;
+          error?: string;
+        } = {};
+        try {
+          data = JSON.parse(completeText || '{}');
+        } catch {
+          throw new Error(
+            parseServerError(completeRes.status, completeText, 'complete'),
+          );
+        }
+
+        if (!completeRes.ok || !Array.isArray(data.segments)) {
+          throw new Error(
+            data.error ||
+              parseServerError(completeRes.status, completeText, 'complete-json'),
+          );
+        }
+
+        return {
+          segments: data.segments,
+          detectedLanguage: data.detectedLanguage || targetLang,
+        };
+      };
 
       const sendViaJsonFallback = async (): Promise<{
         segments: SubtitleSegment[];
@@ -677,8 +718,14 @@ export default function App() {
                 : String(multipartErr);
             const looksLikeHtmlOrProxyIssue =
               msg.includes('HTML') || msg.includes('sem enviar dados');
-            if (
-              looksLikeHtmlOrProxyIssue &&
+            const looksLikeTooLarge =
+              msg.includes('ultrapassou o limite') ||
+              msg.includes('entity too large') ||
+              msg.includes('413');
+            if (serverChunkSupported && looksLikeTooLarge) {
+              result = await sendViaChunkedUpload();
+            } else if (
+              (looksLikeHtmlOrProxyIssue || looksLikeTooLarge) &&
               uploadTargetFile.size <= JSON_FALLBACK_MAX_BYTES
             ) {
               result = await sendViaJsonFallback();
@@ -687,87 +734,7 @@ export default function App() {
             }
           }
         } else {
-          // Chunked upload for large videos where browser audio extraction wasn't used
-          const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          const totalChunks = Math.ceil(uploadTargetFile.size / CHUNK_SIZE_BYTES);
-
-          for (let i = 0; i < totalChunks; i++) {
-            const start = i * CHUNK_SIZE_BYTES;
-            const end = Math.min(uploadTargetFile.size, start + CHUNK_SIZE_BYTES);
-            const chunkBlob = uploadTargetFile.slice(start, end);
-
-            const chunkForm = new FormData();
-            chunkForm.append('uploadId', uploadId);
-            chunkForm.append('chunkIndex', String(i));
-            chunkForm.append('chunk', chunkBlob, `part_${i}`);
-
-            setTranscribeStage(`Enviando vídeo (${i + 1}/${totalChunks})...`);
-            const chunkRes = await fetch('/api/transcribe/chunk', {
-              method: 'POST',
-              credentials: 'include',
-              headers: { Accept: 'application/json' },
-              body: chunkForm,
-            });
-            const chunkText = await chunkRes.text();
-            if (!chunkRes.ok) {
-              throw new Error(
-                parseServerError(chunkRes.status, chunkText, 'chunk'),
-              );
-            }
-            setTranscribeProgress(
-              Math.max(10, Math.round(((i + 1) / totalChunks) * 45)),
-            );
-          }
-
-          setTranscribeProgress(50);
-          setTranscribeStage('Transcrevendo áudio com Gemini...');
-          aiTicker = window.setInterval(() => {
-            setTranscribeProgress((prev) => (prev < 92 ? prev + 2 : prev));
-          }, 700);
-
-          const completeRes = await fetch('/api/transcribe/complete', {
-            method: 'POST',
-            credentials: 'include',
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
-            },
-            body: JSON.stringify({
-              uploadId,
-              totalChunks,
-              fileName: uploadTargetFile.name,
-              mimeType: uploadTargetFile.type || 'video/mp4',
-              language: targetLang,
-              customDictionary: customDictionary.trim(),
-            }),
-          });
-          if (aiTicker) clearInterval(aiTicker);
-
-          const completeText = await completeRes.text();
-          let data: {
-            segments?: SubtitleSegment[];
-            detectedLanguage?: string;
-            error?: string;
-          } = {};
-          try {
-            data = JSON.parse(completeText || '{}');
-          } catch {
-            throw new Error(
-              parseServerError(completeRes.status, completeText, 'complete'),
-            );
-          }
-
-          if (!completeRes.ok || !Array.isArray(data.segments)) {
-            throw new Error(
-              data.error ||
-                parseServerError(completeRes.status, completeText, 'complete-json'),
-            );
-          }
-
-          result = {
-            segments: data.segments,
-            detectedLanguage: data.detectedLanguage || targetLang,
-          };
+          result = await sendViaChunkedUpload();
         }
 
         setTranscribeProgress(100);
@@ -875,7 +842,7 @@ export default function App() {
 
   // Global Ctrl+Z / Ctrl+Y shortcuts while on Step 2
   useEffect(() => {
-    if (view !== 'wizard' || step !== 2) return;
+    if (step !== 2) return;
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const isTextField =
@@ -898,7 +865,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [view, step, handleUndo, handleRedo]);
+  }, [step, handleUndo, handleRedo]);
 
   const handleEditSegmentText = (segmentId: string, newText: string) => {
     setSegments((prev) =>
@@ -1124,102 +1091,6 @@ export default function App() {
     }
   };
 
-  const handleSaveProject = async () => {
-    if (!user) {
-      await handleSignIn();
-      return;
-    }
-    if (segments.length === 0) return;
-
-    setAlert(null);
-    setIsSavingProject(true);
-    try {
-      const savedId = await saveSubtitleProject({
-        projectId: activeProjectId || undefined,
-        ownerId: user.uid,
-        title: projectTitle || 'Projeto Dewers IA',
-        videoFileName: videoFileName || 'video.mp4',
-        duration,
-        language,
-        styleConfig,
-        transitionConfig: {
-          enabled: false,
-          mode: 'transition',
-          type: 'fade',
-          intensity: 'low',
-          pauseThreshold: 0.7,
-          duration: 0.45,
-        },
-        transitionPoints: [],
-        segments,
-      });
-      setActiveProjectId(savedId);
-      setAlert({
-        type: 'success',
-        message: 'Projeto salvo na sua conta com sucesso.',
-      });
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      setAlert({
-        type: 'error',
-        message: `Erro ao salvar projeto: ${msg}`,
-      });
-    } finally {
-      setIsSavingProject(false);
-    }
-  };
-
-  const handleOpenProject = (proj: SavedProject) => {
-    setActiveProjectId(proj.id);
-    setProjectTitle(proj.title);
-    setVideoFileName(proj.videoFileName);
-    setDuration(proj.duration);
-    const validLangs: SupportedLanguage[] = ['pt-BR', 'en-US', 'es-ES', 'fr-FR'];
-    setLanguage(validLangs.includes(proj.language) ? proj.language : 'pt-BR');
-
-    const validPresets = Object.keys(PRESET_DEFINITIONS);
-    const loadedStyle = proj.styleConfig as StyleConfig;
-    if (validPresets.includes(loadedStyle.preset)) {
-      setStyleConfig({
-        ...loadedStyle,
-        fontScale: loadedStyle.fontScale ?? 100,
-        verticalPosition: loadedStyle.verticalPosition ?? 75,
-      });
-    } else {
-      setStyleConfig({ ...PRESET_DEFINITIONS.viral_impacto.style });
-    }
-
-    setSegments(proj.segments);
-    setUndoStack([]);
-    setRedoStack([]);
-    setSubtitlesReviewed(Boolean(proj.segments.length > 0));
-
-    setView('wizard');
-    setStep(videoUrl ? 2 : 1);
-    setMaxReachedStep(videoUrl ? 2 : 1);
-    setAlert({
-      type: 'info',
-      message: videoUrl
-        ? `Projeto "${proj.title}" carregado.`
-        : `Projeto "${proj.title}" carregado. Envie o arquivo de vídeo local correspondente para revisar na Etapa 2 e exportar.`,
-    });
-  };
-
-  const handleDeleteProject = async (projectId: string) => {
-    try {
-      await deleteSubtitleProject(projectId);
-      if (activeProjectId === projectId) {
-        setActiveProjectId(null);
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      setAlert({
-        type: 'error',
-        message: `Erro ao excluir projeto: ${msg}`,
-      });
-    }
-  };
-
   if (!authReady) {
     return (
       <div className="min-h-screen bg-[#0B0D13] text-slate-200 flex items-center justify-center">
@@ -1236,7 +1107,6 @@ export default function App() {
       <>
         <LoginScreen
           onLoginSuccess={() => {
-            setView('wizard');
             setStep(1);
           }}
         />
@@ -1248,42 +1118,20 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#090B10] text-slate-100 flex flex-col">
-      {/* Top Bar Contract: 3 zones */}
+      {/* Top Bar */}
       <header className="border-b border-white/10 bg-[#090B10]/95 backdrop-blur-sm sticky top-0 z-30">
         <div className="max-w-[1400px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
           {/* Zone 1: Brand Wordmark */}
           <button
             type="button"
-            onClick={() => setView('wizard')}
+            onClick={() => setStep(1)}
             className="flex items-center gap-2.5 text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0"
           >
             <Clapperboard className="w-5 h-5 text-amber-400" />
             <span>Dewers IA</span>
           </button>
 
-          {/* Zone 2: Clean Nav Links */}
-          <nav className="flex items-center gap-6 text-sm font-medium text-slate-400">
-            <button
-              type="button"
-              onClick={() => setView('wizard')}
-              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
-                view === 'wizard' ? 'text-white' : ''
-              }`}
-            >
-              Assistente
-            </button>
-            <button
-              type="button"
-              onClick={() => setView('projects')}
-              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
-                view === 'projects' ? 'text-white' : ''
-              }`}
-            >
-              Meus Projetos
-            </button>
-          </nav>
-
-          {/* Zone 3: Install PWA, Admin Diagnostic (Google Admin only) & Auth Action */}
+          {/* Zone 2: Install PWA, Admin Diagnostic (Google Admin only) & Auth Action */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <PWAInstallButton />
             {isAdmin && (
@@ -1335,16 +1183,14 @@ export default function App() {
         </div>
       </header>
 
-      {/* Top Step Progress Bar (shown in Wizard mode) */}
-      {view === 'wizard' && (
-        <WizardProgressBar
-          currentStep={step}
-          maxReachedStep={maxReachedStep}
-          hasVideo={Boolean(videoUrl)}
-          hasSubtitles={segments.length > 0}
-          onSelectStep={handleSelectWizardStep}
-        />
-      )}
+      {/* Top Step Progress Bar */}
+      <WizardProgressBar
+        currentStep={step}
+        maxReachedStep={maxReachedStep}
+        hasVideo={Boolean(videoUrl)}
+        hasSubtitles={segments.length > 0}
+        onSelectStep={handleSelectWizardStep}
+      />
 
       <main className="flex-1">
         {/* Alert Banner */}
@@ -1384,18 +1230,7 @@ export default function App() {
           </div>
         )}
 
-        {view === 'projects' ? (
-          <ProjectsPanel
-            isAuthenticated={Boolean(user)}
-            isLoading={projectsLoading}
-            projects={projects}
-            activeProjectId={activeProjectId}
-            onSignIn={handleSignIn}
-            onOpenProject={handleOpenProject}
-            onDeleteProject={handleDeleteProject}
-            onBackToEditor={() => setView('wizard')}
-          />
-        ) : step === 1 ? (
+        {step === 1 ? (
           /* ===================== ETAPA 1: VÍDEO ===================== */
           <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -1577,12 +1412,9 @@ export default function App() {
             hasVideo={Boolean(videoUrl)}
             isExporting={isExporting}
             exportProgress={exportProgress}
-            isSavingProject={isSavingProject}
-            isAuthenticated={Boolean(user)}
             onDownloadVideo={handleExportVideo}
             onCancelExport={() => exportAbortRef.current?.abort()}
             onDownloadSrt={handleDownloadSrt}
-            onSaveProject={handleSaveProject}
             onBackToStep2={() => setStep(2)}
           />
         )}

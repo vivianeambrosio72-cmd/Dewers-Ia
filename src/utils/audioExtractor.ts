@@ -86,7 +86,7 @@ export async function prepareAudioForTranscription(
     }
 
     // Choose highest speech sample rate that keeps the mono WAV under maxWavBytes
-    const candidateRates = [16000, 12000, 10000, 8000];
+    const candidateRates = [16000, 12000, 10000, 8000, 6000];
     let selectedRate: number | null = null;
     for (const rate of candidateRates) {
       const len = Math.max(1, Math.ceil(decoded.duration * rate));

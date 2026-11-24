@@ -77,22 +77,6 @@ export interface TransitionPoint {
   pauseDuration?: number;
 }
 
-export interface SavedProject {
-  id: string;
-  ownerId: string;
-  title: string;
-  videoFileName: string;
-  duration: number;
-  language: SupportedLanguage;
-  styleConfig: StyleConfig;
-  transitionConfig?: TransitionConfig;
-  transitionPoints?: TransitionPoint[];
-  segments: SubtitleSegment[];
-  wordCount: number;
-  createdAt?: unknown;
-  updatedAt?: unknown;
-}
-
 export const LANGUAGE_OPTIONS: Array<{ value: SupportedLanguage; label: string }> = [
   { value: 'pt-BR', label: 'Português (Brasil) · pt-BR' },
   { value: 'en-US', label: 'Inglês · en-US' },
