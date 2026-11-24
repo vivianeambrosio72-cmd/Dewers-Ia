@@ -57,7 +57,7 @@ interface BannerAlert {
   message: string;
 }
 
-const MAX_UPLOAD_MB = 100;
+const MAX_UPLOAD_MB = 200;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const AUTOSAVE_STORAGE_KEY = 'dewers_ia_step2_autosave_v1';
 
@@ -422,13 +422,19 @@ export default function App() {
         return;
       }
 
-      setTranscribeStage('Preparando áudio do vídeo...');
+      setTranscribeStage('Extraindo e otimizando áudio do vídeo...');
       const maxAudioWavBytes = serverChunkSupported
-        ? 15 * 1024 * 1024
-        : Math.max(1024 * 1024, Math.floor(serverMaxUploadBytes * 0.85));
+        ? 14 * 1024 * 1024
+        : Math.max(
+            1024 * 1024,
+            Math.min(2.6 * 1024 * 1024, Math.floor(serverMaxUploadBytes * 0.65)),
+          );
+      const maxPartDurationSec = serverChunkSupported ? 180 : 50;
+
       const prepared = await prepareAudioForTranscription(
         videoFile,
         maxAudioWavBytes,
+        maxPartDurationSec,
       );
       if (prepared.isSilent) {
         setIsTranscribing(false);
@@ -441,16 +447,27 @@ export default function App() {
         return;
       }
 
-      const uploadTargetFile = prepared.audioFile ?? videoFile;
-      if (!serverChunkSupported && uploadTargetFile.size > serverMaxUploadBytes) {
+      const partsToProcess =
+        prepared.audioParts.length > 0
+          ? prepared.audioParts
+          : [{ file: videoFile, startTime: 0, duration }];
+
+      if (
+        prepared.audioParts.length === 0 &&
+        !serverChunkSupported &&
+        videoFile.size > serverMaxUploadBytes
+      ) {
         setIsTranscribing(false);
         setTranscribeProgress(0);
         const limitMb = Math.max(1, Math.round(serverMaxUploadBytes / (1024 * 1024)));
+        const reasonHint = prepared.decodeError
+          ? ` (${prepared.decodeError})`
+          : '';
         setAlert({
           type: 'error',
           message:
             serverPlatform === 'vercel'
-              ? `Na Vercel, o envio direto aceita até ${limitMb} MB e não foi possível comprimir o áudio deste vídeo abaixo desse limite no navegador. Envie um vídeo MP4 mais curto (até ~3 minutos).`
+              ? `Não foi possível extrair o áudio deste vídeo no navegador${reasonHint} e o arquivo original ultrapassa o limite direto de ${limitMb} MB da Vercel. Reexporte ou converta o vídeo como MP4 (AAC) padrão para enviar arquivos de 100 MB ou mais.`
               : `O arquivo ultrapassou o limite de ${limitMb} MB aceito pelo servidor.`,
         });
         return;
@@ -465,286 +482,374 @@ export default function App() {
       const CHUNK_SIZE_BYTES = 3 * 1024 * 1024; // 3 MB chunks (safe under proxy body limits)
       let aiTicker: number | undefined;
 
-      const sendViaChunkedUpload = async (): Promise<{
+      const transcribeSingleTarget = async (
+        targetFile: File,
+        partIdx: number,
+        totalParts: number,
+        allowNoAudio: boolean,
+      ): Promise<{
         segments: SubtitleSegment[];
         detectedLanguage: string;
       }> => {
-        const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const totalChunks = Math.ceil(uploadTargetFile.size / CHUNK_SIZE_BYTES);
+        const partLabel = totalParts > 1 ? ` (${partIdx + 1}/${totalParts})` : '';
+        const basePct = 10 + Math.round((partIdx / totalParts) * 85);
+        const spanPct = Math.max(5, Math.round(85 / totalParts));
+        const uploadMaxPct = Math.min(94, basePct + Math.round(spanPct * 0.45));
+        const aiMaxPct = Math.min(95, basePct + spanPct);
 
-        for (let i = 0; i < totalChunks; i++) {
-          const start = i * CHUNK_SIZE_BYTES;
-          const end = Math.min(uploadTargetFile.size, start + CHUNK_SIZE_BYTES);
-          const chunkBlob = uploadTargetFile.slice(start, end);
+        const sendViaChunkedUpload = async (): Promise<{
+          segments: SubtitleSegment[];
+          detectedLanguage: string;
+        }> => {
+          const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          const totalChunks = Math.ceil(targetFile.size / CHUNK_SIZE_BYTES);
 
-          const chunkForm = new FormData();
-          chunkForm.append('uploadId', uploadId);
-          chunkForm.append('chunkIndex', String(i));
-          chunkForm.append('chunk', chunkBlob, `part_${i}`);
+          for (let i = 0; i < totalChunks; i++) {
+            const start = i * CHUNK_SIZE_BYTES;
+            const end = Math.min(targetFile.size, start + CHUNK_SIZE_BYTES);
+            const chunkBlob = targetFile.slice(start, end);
 
-          setTranscribeStage(`Enviando vídeo (${i + 1}/${totalChunks})...`);
-          const chunkRes = await fetch('/api/transcribe/chunk', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { Accept: 'application/json' },
-            body: chunkForm,
-          });
-          const chunkText = await chunkRes.text();
-          if (!chunkRes.ok) {
-            throw new Error(
-              parseServerError(chunkRes.status, chunkText, 'chunk'),
+            const chunkForm = new FormData();
+            chunkForm.append('uploadId', uploadId);
+            chunkForm.append('chunkIndex', String(i));
+            chunkForm.append('chunk', chunkBlob, `part_${i}`);
+
+            setTranscribeStage(
+              `Enviando vídeo${partLabel} (${i + 1}/${totalChunks})...`,
+            );
+            const chunkRes = await fetch('/api/transcribe/chunk', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { Accept: 'application/json' },
+              body: chunkForm,
+            });
+            const chunkText = await chunkRes.text();
+            if (!chunkRes.ok) {
+              throw new Error(
+                parseServerError(chunkRes.status, chunkText, 'chunk'),
+              );
+            }
+            setTranscribeProgress(
+              Math.min(
+                uploadMaxPct,
+                basePct + Math.round(((i + 1) / totalChunks) * (uploadMaxPct - basePct)),
+              ),
             );
           }
-          setTranscribeProgress(
-            Math.max(10, Math.round(((i + 1) / totalChunks) * 45)),
-          );
-        }
 
-        setTranscribeProgress(50);
-        setTranscribeStage('Transcrevendo áudio com Gemini...');
-        aiTicker = window.setInterval(() => {
-          setTranscribeProgress((prev) => (prev < 92 ? prev + 2 : prev));
-        }, 700);
+          setTranscribeProgress(uploadMaxPct);
+          setTranscribeStage(`Transcrevendo áudio com Gemini${partLabel}...`);
+          aiTicker = window.setInterval(() => {
+            setTranscribeProgress((prev) => (prev < aiMaxPct ? prev + 1 : prev));
+          }, 700);
 
-        const completeRes = await fetch('/api/transcribe/complete', {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify({
-            uploadId,
-            totalChunks,
-            fileName: uploadTargetFile.name,
-            mimeType: uploadTargetFile.type || 'video/mp4',
-            language: targetLang,
-            customDictionary: customDictionary.trim(),
-          }),
-        });
-        if (aiTicker) clearInterval(aiTicker);
+          const completeRes = await fetch('/api/transcribe/complete', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify({
+              uploadId,
+              totalChunks,
+              fileName: targetFile.name,
+              mimeType: targetFile.type || 'video/mp4',
+              language: targetLang,
+              customDictionary: customDictionary.trim(),
+            }),
+          });
+          if (aiTicker) {
+            clearInterval(aiTicker);
+            aiTicker = undefined;
+          }
 
-        const completeText = await completeRes.text();
-        let data: {
-          segments?: SubtitleSegment[];
-          detectedLanguage?: string;
-          error?: string;
-        } = {};
-        try {
-          data = JSON.parse(completeText || '{}');
-        } catch {
-          throw new Error(
-            parseServerError(completeRes.status, completeText, 'complete'),
-          );
-        }
+          const completeText = await completeRes.text();
+          let data: {
+            segments?: SubtitleSegment[];
+            detectedLanguage?: string;
+            error?: string;
+            code?: string;
+          } = {};
+          try {
+            data = JSON.parse(completeText || '{}');
+          } catch {
+            throw new Error(
+              parseServerError(completeRes.status, completeText, 'complete'),
+            );
+          }
 
-        if (!completeRes.ok || !Array.isArray(data.segments)) {
-          throw new Error(
-            data.error ||
-              parseServerError(completeRes.status, completeText, 'complete-json'),
-          );
-        }
+          if (allowNoAudio && (completeRes.status === 422 || data.code === 'NO_AUDIO')) {
+            return { segments: [], detectedLanguage: targetLang };
+          }
 
-        return {
-          segments: data.segments,
-          detectedLanguage: data.detectedLanguage || targetLang,
+          if (!completeRes.ok || !Array.isArray(data.segments)) {
+            throw new Error(
+              data.error ||
+                parseServerError(completeRes.status, completeText, 'complete-json'),
+            );
+          }
+
+          return {
+            segments: data.segments,
+            detectedLanguage: data.detectedLanguage || targetLang,
+          };
         };
-      };
 
-      const sendViaJsonFallback = async (): Promise<{
-        segments: SubtitleSegment[];
-        detectedLanguage: string;
-      }> => {
-        setTranscribeStage('Reenviando áudio em formato compatível...');
-        setTranscribeProgress(55);
-        const audioBase64 = await fileToBase64(uploadTargetFile);
-        const res = await fetch('/api/transcribe-json', {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify({
-            audioBase64,
-            fileName: uploadTargetFile.name,
-            mimeType: uploadTargetFile.type || 'audio/wav',
-            language: targetLang,
-            customDictionary: customDictionary.trim(),
-          }),
-        });
-        const text = await res.text();
-        let data: {
-          segments?: SubtitleSegment[];
-          detectedLanguage?: string;
-          error?: string;
-        } = {};
-        try {
-          data = JSON.parse(text || '{}');
-        } catch {
-          throw new Error(parseServerError(res.status, text, 'transcribe-json'));
-        }
-        if (!res.ok || !Array.isArray(data.segments)) {
-          throw new Error(
-            data.error || parseServerError(res.status, text, 'transcribe-json'),
-          );
-        }
-        return {
-          segments: data.segments,
-          detectedLanguage: data.detectedLanguage || targetLang,
+        const sendViaJsonFallback = async (): Promise<{
+          segments: SubtitleSegment[];
+          detectedLanguage: string;
+        }> => {
+          setTranscribeStage(`Reenviando áudio em formato compatível${partLabel}...`);
+          setTranscribeProgress(uploadMaxPct);
+          const audioBase64 = await fileToBase64(targetFile);
+          const res = await fetch('/api/transcribe-json', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify({
+              audioBase64,
+              fileName: targetFile.name,
+              mimeType: targetFile.type || 'audio/wav',
+              language: targetLang,
+              customDictionary: customDictionary.trim(),
+            }),
+          });
+          const text = await res.text();
+          let data: {
+            segments?: SubtitleSegment[];
+            detectedLanguage?: string;
+            error?: string;
+            code?: string;
+          } = {};
+          try {
+            data = JSON.parse(text || '{}');
+          } catch {
+            throw new Error(parseServerError(res.status, text, 'transcribe-json'));
+          }
+          if (allowNoAudio && (res.status === 422 || data.code === 'NO_AUDIO')) {
+            return { segments: [], detectedLanguage: targetLang };
+          }
+          if (!res.ok || !Array.isArray(data.segments)) {
+            throw new Error(
+              data.error || parseServerError(res.status, text, 'transcribe-json'),
+            );
+          }
+          return {
+            segments: data.segments,
+            detectedLanguage: data.detectedLanguage || targetLang,
+          };
         };
+
+        if (targetFile.size > CHUNK_THRESHOLD_BYTES) {
+          return sendViaChunkedUpload();
+        }
+
+        const formData = new FormData();
+        formData.append('video', targetFile);
+        formData.append('language', targetLang);
+        if (customDictionary.trim()) {
+          formData.append('customDictionary', customDictionary.trim());
+        }
+
+        try {
+          return await new Promise<{
+            segments: SubtitleSegment[];
+            detectedLanguage: string;
+          }>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/transcribe');
+            xhr.withCredentials = true;
+            xhr.setRequestHeader('Accept', 'application/json');
+            xhr.timeout = 240000;
+
+            xhr.upload.onprogress = (ev) => {
+              if (ev.lengthComputable) {
+                const ratio = ev.loaded / Math.max(1, ev.total);
+                const pct = Math.min(
+                  uploadMaxPct,
+                  basePct + Math.round(ratio * (uploadMaxPct - basePct)),
+                );
+                setTranscribeProgress(pct);
+                setTranscribeStage(
+                  prepared.audioParts.length > 0
+                    ? `Enviando áudio otimizado${partLabel}...`
+                    : `Enviando vídeo para transcrição${partLabel}...`,
+                );
+              }
+            };
+
+            xhr.upload.onload = () => {
+              setTranscribeProgress(uploadMaxPct);
+              setTranscribeStage(`Transcrevendo áudio com Gemini${partLabel}...`);
+              aiTicker = window.setInterval(() => {
+                setTranscribeProgress((prev) => (prev < aiMaxPct ? prev + 1 : prev));
+              }, 700);
+            };
+
+            xhr.onload = () => {
+              if (aiTicker) {
+                clearInterval(aiTicker);
+                aiTicker = undefined;
+              }
+              const contentType = xhr.getResponseHeader('content-type') || '';
+              if (
+                xhr.responseURL &&
+                !xhr.responseURL.includes('/api/transcribe')
+              ) {
+                reject(
+                  new Error(
+                    parseServerError(
+                      xhr.status,
+                      xhr.responseText,
+                      `redirected:${xhr.responseURL}`,
+                    ),
+                  ),
+                );
+                return;
+              }
+              try {
+                const data = JSON.parse(xhr.responseText || '{}');
+                if (
+                  allowNoAudio &&
+                  (xhr.status === 422 || data.code === 'NO_AUDIO')
+                ) {
+                  resolve({ segments: [], detectedLanguage: targetLang });
+                  return;
+                }
+                if (
+                  xhr.status >= 200 &&
+                  xhr.status < 300 &&
+                  Array.isArray(data.segments)
+                ) {
+                  resolve(data);
+                } else {
+                  reject(
+                    new Error(
+                      data.error ||
+                        parseServerError(
+                          xhr.status,
+                          xhr.responseText,
+                          `ct=${contentType}`,
+                        ),
+                    ),
+                  );
+                }
+              } catch {
+                reject(
+                  new Error(
+                    parseServerError(
+                      xhr.status,
+                      xhr.responseText,
+                      `ct=${contentType}`,
+                    ),
+                  ),
+                );
+              }
+            };
+
+            xhr.ontimeout = () => {
+              if (aiTicker) {
+                clearInterval(aiTicker);
+                aiTicker = undefined;
+              }
+              reject(
+                new Error(
+                  'O tempo de transcrição excedeu o limite. Tente um vídeo mais curto ou verifique sua conexão.',
+                ),
+              );
+            };
+
+            xhr.onerror = () => {
+              if (aiTicker) {
+                clearInterval(aiTicker);
+                aiTicker = undefined;
+              }
+              reject(
+                new Error(
+                  'Erro de rede ao enviar o vídeo. Verifique sua conexão e tente novamente.',
+                ),
+              );
+            };
+
+            xhr.send(formData);
+          });
+        } catch (multipartErr) {
+          const msg =
+            multipartErr instanceof Error
+              ? multipartErr.message
+              : String(multipartErr);
+          const looksLikeHtmlOrProxyIssue =
+            msg.includes('HTML') || msg.includes('sem enviar dados');
+          const looksLikeTooLarge =
+            msg.includes('ultrapassou o limite') ||
+            msg.includes('entity too large') ||
+            msg.includes('413');
+          if (serverChunkSupported && looksLikeTooLarge) {
+            return sendViaChunkedUpload();
+          }
+          if (
+            (looksLikeHtmlOrProxyIssue || looksLikeTooLarge) &&
+            targetFile.size <= JSON_FALLBACK_MAX_BYTES
+          ) {
+            return sendViaJsonFallback();
+          }
+          throw multipartErr;
+        }
       };
 
       try {
-        let result: {
-          segments: SubtitleSegment[];
-          detectedLanguage: string;
-        };
+        const mergedSegments: SubtitleSegment[] = [];
+        let finalDetectedLanguage: string = targetLang;
+        const totalParts = partsToProcess.length;
 
-        if (uploadTargetFile.size <= CHUNK_THRESHOLD_BYTES) {
-          const formData = new FormData();
-          formData.append('video', uploadTargetFile);
-          formData.append('language', targetLang);
-          if (customDictionary.trim()) {
-            formData.append('customDictionary', customDictionary.trim());
+        for (let idx = 0; idx < totalParts; idx++) {
+          const part = partsToProcess[idx];
+          const partResult = await transcribeSingleTarget(
+            part.file,
+            idx,
+            totalParts,
+            totalParts > 1,
+          );
+          if (idx === 0 && partResult.detectedLanguage) {
+            finalDetectedLanguage = partResult.detectedLanguage;
           }
 
-          try {
-            result = await new Promise<{
-              segments: SubtitleSegment[];
-              detectedLanguage: string;
-            }>((resolve, reject) => {
-              const xhr = new XMLHttpRequest();
-              xhr.open('POST', '/api/transcribe');
-              xhr.withCredentials = true;
-              xhr.setRequestHeader('Accept', 'application/json');
-              xhr.timeout = 240000;
-
-              xhr.upload.onprogress = (ev) => {
-                if (ev.lengthComputable) {
-                  const pct = Math.min(45, Math.round((ev.loaded / ev.total) * 45));
-                  setTranscribeProgress(Math.max(10, pct));
-                  setTranscribeStage(
-                    prepared.audioFile
-                      ? 'Enviando áudio otimizado...'
-                      : 'Enviando vídeo para transcrição...',
-                  );
-                }
-              };
-
-              xhr.upload.onload = () => {
-                setTranscribeProgress(50);
-                setTranscribeStage('Transcrevendo áudio com Gemini...');
-                aiTicker = window.setInterval(() => {
-                  setTranscribeProgress((prev) => (prev < 92 ? prev + 2 : prev));
-                }, 700);
-              };
-
-              xhr.onload = () => {
-                if (aiTicker) clearInterval(aiTicker);
-                const contentType = xhr.getResponseHeader('content-type') || '';
-                if (
-                  xhr.responseURL &&
-                  !xhr.responseURL.includes('/api/transcribe')
-                ) {
-                  reject(
-                    new Error(
-                      parseServerError(
-                        xhr.status,
-                        xhr.responseText,
-                        `redirected:${xhr.responseURL}`,
-                      ),
-                    ),
-                  );
-                  return;
-                }
-                try {
-                  const data = JSON.parse(xhr.responseText || '{}');
-                  if (
-                    xhr.status >= 200 &&
-                    xhr.status < 300 &&
-                    Array.isArray(data.segments)
-                  ) {
-                    resolve(data);
-                  } else {
-                    reject(
-                      new Error(
-                        data.error ||
-                          parseServerError(
-                            xhr.status,
-                            xhr.responseText,
-                            `ct=${contentType}`,
-                          ),
-                      ),
-                    );
-                  }
-                } catch {
-                  reject(
-                    new Error(
-                      parseServerError(
-                        xhr.status,
-                        xhr.responseText,
-                        `ct=${contentType}`,
-                      ),
-                    ),
-                  );
-                }
-              };
-
-              xhr.ontimeout = () => {
-                if (aiTicker) clearInterval(aiTicker);
-                reject(
-                  new Error(
-                    'O tempo de transcrição excedeu o limite. Tente um vídeo mais curto ou verifique sua conexão.',
-                  ),
-                );
-              };
-
-              xhr.onerror = () => {
-                if (aiTicker) clearInterval(aiTicker);
-                reject(
-                  new Error(
-                    'Erro de rede ao enviar o vídeo. Verifique sua conexão e tente novamente.',
-                  ),
-                );
-              };
-
-              xhr.send(formData);
+          const offset = part.startTime;
+          for (const seg of partResult.segments) {
+            const shiftedWords = seg.words.map((w) => ({
+              ...w,
+              id: `p${idx}_${w.id}`,
+              start: Number((w.start + offset).toFixed(3)),
+              end: Number((w.end + offset).toFixed(3)),
+            }));
+            mergedSegments.push({
+              ...seg,
+              id: `p${idx}_${seg.id}`,
+              start: Number((seg.start + offset).toFixed(3)),
+              end: Number((seg.end + offset).toFixed(3)),
+              words: shiftedWords,
             });
-          } catch (multipartErr) {
-            const msg =
-              multipartErr instanceof Error
-                ? multipartErr.message
-                : String(multipartErr);
-            const looksLikeHtmlOrProxyIssue =
-              msg.includes('HTML') || msg.includes('sem enviar dados');
-            const looksLikeTooLarge =
-              msg.includes('ultrapassou o limite') ||
-              msg.includes('entity too large') ||
-              msg.includes('413');
-            if (serverChunkSupported && looksLikeTooLarge) {
-              result = await sendViaChunkedUpload();
-            } else if (
-              (looksLikeHtmlOrProxyIssue || looksLikeTooLarge) &&
-              uploadTargetFile.size <= JSON_FALLBACK_MAX_BYTES
-            ) {
-              result = await sendViaJsonFallback();
-            } else {
-              throw multipartErr;
-            }
           }
-        } else {
-          result = await sendViaChunkedUpload();
+        }
+
+        if (mergedSegments.length === 0) {
+          throw new Error(
+            'Nenhuma fala audível foi detectada neste vídeo. Verifique se o áudio não está mudo.',
+          );
         }
 
         setTranscribeProgress(100);
         setTranscribeStage('Legendas prontas!');
         setUndoStack([]);
         setRedoStack([]);
-        setSegments(result.segments);
+        setSegments(mergedSegments);
         setSubtitlesReviewed(false);
         setTranscribedKey(`${videoFile.name}_${videoFile.size}_${targetLang}`);
-        const reviewCount = result.segments.reduce(
+        const reviewCount = mergedSegments.reduce(
           (acc, s) => acc + s.words.filter((w) => w.needsReview).length,
           0,
         );
@@ -752,8 +857,8 @@ export default function App() {
           type: 'success',
           message:
             reviewCount > 0
-              ? `Transcrição concluída (${result.segments.length} blocos). Há ${reviewCount} palavra(s) marcada(s) em amarelo para revisão antes de avançar.`
-              : `Transcrição concluída (${result.segments.length} blocos). Revise o texto e clique em "Legendas revisadas" para continuar.`,
+              ? `Transcrição concluída (${mergedSegments.length} blocos). Há ${reviewCount} palavra(s) marcada(s) em amarelo para revisão antes de avançar.`
+              : `Transcrição concluída (${mergedSegments.length} blocos, ${finalDetectedLanguage}). Revise o texto e clique em "Legendas revisadas" para continuar.`,
         });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -766,7 +871,7 @@ export default function App() {
         }, 300);
       }
     },
-    [videoFile, customDictionary],
+    [videoFile, customDictionary, duration],
   );
 
   // Step 1 -> Step 2 (Auto-transcribe upon entering Step 2 if needed)

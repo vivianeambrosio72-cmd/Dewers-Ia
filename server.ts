@@ -9,7 +9,7 @@ import path from 'node:path';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 
-const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB
+const MAX_FILE_SIZE_BYTES = 200 * 1024 * 1024; // 200 MB
 const UPLOAD_DIR = path.join(os.tmpdir(), 'dewers-ia-uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -664,7 +664,7 @@ async function startServer() {
           await fs.promises.unlink(assembledPath).catch(() => {});
           res.status(413).json({
             error:
-              'O arquivo excede o limite máximo de 100 MB. Compacte o vídeo ou envie um trecho menor.',
+              'O arquivo excede o limite máximo de 200 MB. Compacte o vídeo ou envie um trecho menor.',
             code: 'FILE_TOO_LARGE',
           });
           return;
@@ -707,7 +707,7 @@ async function startServer() {
           if (err.code === 'LIMIT_FILE_SIZE') {
             res.status(413).json({
               error:
-                'O arquivo excede o limite máximo de 100 MB. Compacte o vídeo ou envie um trecho menor.',
+                'O arquivo excede o limite máximo de 200 MB. Compacte o vídeo ou envie um trecho menor.',
               code: 'FILE_TOO_LARGE',
             });
             return;

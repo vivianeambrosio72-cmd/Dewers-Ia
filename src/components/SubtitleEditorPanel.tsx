@@ -104,6 +104,46 @@ export function SubtitleEditorPanel({
 
   const listContainerRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const editingWordInputRef = useRef<HTMLInputElement>(null);
+
+  const scrollRowInsideContainer = (
+    rowEl: HTMLDivElement | null,
+    block: 'nearest' | 'center',
+  ) => {
+    const container = listContainerRef.current;
+    if (!container || !rowEl) return;
+    if (container.scrollHeight <= container.clientHeight) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const rowRect = rowEl.getBoundingClientRect();
+    const relativeTop = rowRect.top - containerRect.top + container.scrollTop;
+    const relativeBottom = relativeTop + rowRect.height;
+
+    if (block === 'center') {
+      const targetTop =
+        relativeTop - Math.max(0, (container.clientHeight - rowRect.height) / 2);
+      container.scrollTo({
+        top: Math.max(0, targetTop),
+        behavior: 'smooth',
+      });
+      return;
+    }
+
+    const visibleTop = container.scrollTop;
+    const visibleBottom = visibleTop + container.clientHeight;
+
+    if (relativeTop < visibleTop) {
+      container.scrollTo({
+        top: Math.max(0, relativeTop - 8),
+        behavior: 'smooth',
+      });
+    } else if (relativeBottom > visibleBottom) {
+      container.scrollTo({
+        top: Math.max(0, relativeBottom - container.clientHeight + 8),
+        behavior: 'smooth',
+      });
+    }
+  };
 
   const totalWords = useMemo(
     () => segments.reduce((acc, s) => acc + s.words.length, 0),
@@ -129,14 +169,21 @@ export function SubtitleEditorPanel({
     return found?.id ?? null;
   }, [segments, currentTime]);
 
-  // Auto-scroll active line into view while the video plays
+  // Auto-scroll active line inside the subtitle list container only (never scroll the page viewport)
   useEffect(() => {
     if (!isPlaying || !activeSegmentId) return;
     const rowEl = rowRefs.current[activeSegmentId];
-    if (rowEl) {
-      rowEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
+    scrollRowInsideContainer(rowEl, 'nearest');
   }, [isPlaying, activeSegmentId]);
+
+  const editingWordKey = editingWord
+    ? `${editingWord.segmentId}:${editingWord.wordId}`
+    : null;
+
+  useEffect(() => {
+    if (!editingWordKey) return;
+    editingWordInputRef.current?.focus({ preventScroll: true });
+  }, [editingWordKey]);
 
   const searchMatchCount = useMemo(() => {
     const q = searchQuery.trim();
@@ -160,9 +207,7 @@ export function SubtitleEditorPanel({
     if (target) {
       onSeekTo(target.start);
       const rowEl = rowRefs.current[target.segmentId];
-      if (rowEl) {
-        rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+      scrollRowInsideContainer(rowEl, 'center');
       setEditingWord({
         segmentId: target.segmentId,
         wordId: target.wordId,
@@ -605,8 +650,8 @@ export function SubtitleEditorPanel({
                         return (
                           <div key={word.id} className="inline-flex items-center gap-1">
                             <input
+                              ref={editingWordInputRef}
                               type="text"
-                              autoFocus
                               value={editingWord.draft}
                               onChange={(e) =>
                                 setEditingWord({

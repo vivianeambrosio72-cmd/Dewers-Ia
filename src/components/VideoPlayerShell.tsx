@@ -169,7 +169,7 @@ export function VideoPlayerShell({
             Selecionar vídeo
           </button>
           <p className="text-xs text-slate-500 mt-4">
-            Formatos aceitos: MP4, MOV ou WebM · Máximo de 100 MB
+            Formatos aceitos: MP4, MOV ou WebM · Até 200 MB
           </p>
         </div>
       ) : (
