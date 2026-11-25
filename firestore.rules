@@ -306,7 +306,7 @@ service cloud.firestore {
         && isOwner(userId)
         && isValidUserProfile(incoming(), userId)
         && incoming().uid == request.auth.uid
-        && incoming().email == request.auth.token.email
+        && incoming().email.lower() == request.auth.token.email.lower()
         && (incoming().role == 'user' || isAdmin())
         && incoming().plan == 'FREE'
         && incoming().subscriptionStatus == 'free'
@@ -318,24 +318,56 @@ service cloud.firestore {
       allow update: if isValidId(userId)
         && isVerified()
         && isValidUserProfile(incoming(), userId)
-        && incoming().uid == existing().uid
-        && incoming().email == existing().email
-        && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
           (
             isAdmin()
+            && incoming().uid == existing().uid
+            && incoming().email == existing().email
+            && incoming().createdAt == existing().createdAt
             && (incoming().role == existing().role || (incoming().role == 'admin' && incoming().email == 'dewersmatari@gmail.com'))
             && incoming().diff(existing()).affectedKeys().hasOnly(['plan', 'subscriptionStatus', 'billingCycle', 'subscriptionExpiresAt', 'updatedAt', 'role'])
           )
           || (
             isOwner(userId)
+            && incoming().uid == existing().uid
+            && incoming().email == existing().email
+            && incoming().createdAt == existing().createdAt
             && incoming().role == existing().role
             && incoming().plan == existing().plan
             && incoming().subscriptionStatus == existing().subscriptionStatus
             && incoming().billingCycle == existing().billingCycle
             && incoming().lastActiveAt == request.time
             && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'authProvider', 'lastActiveAt', 'updatedAt'])
+          )
+          || (
+            isOwner(userId)
+            && !isValidUserProfile(existing(), userId)
+            && incoming().uid == request.auth.uid
+            && incoming().email.lower() == request.auth.token.email.lower()
+            && (incoming().role == 'user' || (incoming().role == 'admin' && isAdmin()))
+            && (
+              (!('plan' in existing()) && incoming().plan == 'FREE')
+              || ('plan' in existing() && incoming().plan == existing().plan)
+            )
+            && (
+              (!('subscriptionStatus' in existing()) && incoming().subscriptionStatus == 'free')
+              || ('subscriptionStatus' in existing() && incoming().subscriptionStatus == existing().subscriptionStatus)
+            )
+            && (
+              (!('billingCycle' in existing()) && incoming().billingCycle == 'none')
+              || ('billingCycle' in existing() && incoming().billingCycle == existing().billingCycle)
+            )
+            && (
+              (!('createdAt' in existing()) && incoming().createdAt == request.time)
+              || ('createdAt' in existing() && existing().createdAt is timestamp && incoming().createdAt == existing().createdAt)
+              || ('createdAt' in existing() && !(existing().createdAt is timestamp) && incoming().createdAt == request.time)
+            )
+            && incoming().lastActiveAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'uid', 'displayName', 'email', 'photoURL', 'role', 'authProvider',
+              'plan', 'subscriptionStatus', 'billingCycle', 'lastActiveAt', 'createdAt', 'updatedAt'
+            ])
           )
         );
 

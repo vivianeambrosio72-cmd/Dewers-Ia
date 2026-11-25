@@ -306,6 +306,21 @@ export async function syncUserProfileOnLogin(
   const photoURL = user.photoURL ? user.photoURL.slice(0, 1000) : null;
   const authProvider = detectAuthProvider(user);
 
+  let resolvedEmail = user.email;
+  try {
+    const tokenRes = await user.getIdTokenResult();
+    if (
+      typeof tokenRes.claims?.email === 'string' &&
+      tokenRes.claims.email.trim()
+    ) {
+      resolvedEmail = tokenRes.claims.email.trim();
+    }
+  } catch {
+    // Keep user.email fallback
+  }
+
+  let existingSnapData: Record<string, unknown> | null = null;
+
   try {
     const snap = await getDoc(userRef);
     if (!snap.exists()) {
@@ -313,7 +328,7 @@ export async function syncUserProfileOnLogin(
       const payload = {
         uid: user.uid,
         displayName,
-        email: user.email,
+        email: resolvedEmail,
         photoURL,
         role,
         authProvider,
@@ -328,7 +343,7 @@ export async function syncUserProfileOnLogin(
       return {
         uid: user.uid,
         displayName,
-        email: user.email,
+        email: resolvedEmail,
         photoURL,
         role,
         authProvider,
@@ -342,13 +357,99 @@ export async function syncUserProfileOnLogin(
       };
     }
 
-    await updateDoc(userRef, {
-      displayName,
-      photoURL,
-      authProvider,
-      lastActiveAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    existingSnapData = snap.data() as Record<string, unknown>;
+    const allowedUserKeys = new Set([
+      'uid',
+      'displayName',
+      'email',
+      'photoURL',
+      'role',
+      'authProvider',
+      'plan',
+      'subscriptionStatus',
+      'billingCycle',
+      'subscriptionExpiresAt',
+      'lastActiveAt',
+      'createdAt',
+      'updatedAt',
+    ]);
+    const hasOnlyAllowedKeys = Object.keys(existingSnapData).every((k) =>
+      allowedUserKeys.has(k),
+    );
+    const hasCompleteValidSchema =
+      hasOnlyAllowedKeys &&
+      existingSnapData.uid === user.uid &&
+      typeof existingSnapData.email === 'string' &&
+      existingSnapData.email.trim().length >= 3 &&
+      (existingSnapData.role === 'user' || existingSnapData.role === 'admin') &&
+      (existingSnapData.authProvider === 'google' ||
+        existingSnapData.authProvider === 'email') &&
+      (existingSnapData.plan === 'FREE' || existingSnapData.plan === 'PRO') &&
+      typeof existingSnapData.subscriptionStatus === 'string' &&
+      ['free', 'active', 'pending', 'expired', 'cancelled'].includes(
+        existingSnapData.subscriptionStatus,
+      ) &&
+      typeof existingSnapData.billingCycle === 'string' &&
+      ['none', 'monthly', 'annual'].includes(existingSnapData.billingCycle) &&
+      existingSnapData.createdAt instanceof Timestamp;
+
+    if (hasCompleteValidSchema) {
+      await updateDoc(userRef, {
+        displayName,
+        photoURL,
+        authProvider,
+        lastActiveAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      const preservedPlan: UserPlan =
+        existingSnapData.plan === 'PRO' ? 'PRO' : 'FREE';
+      const rawStatus = existingSnapData.subscriptionStatus;
+      const preservedStatus: SubscriptionStatus =
+        rawStatus === 'active' ||
+        rawStatus === 'pending' ||
+        rawStatus === 'expired' ||
+        rawStatus === 'cancelled' ||
+        rawStatus === 'free'
+          ? rawStatus
+          : 'free';
+      const rawCycle = existingSnapData.billingCycle;
+      const preservedCycle: BillingCycle =
+        rawCycle === 'monthly' || rawCycle === 'annual' || rawCycle === 'none'
+          ? rawCycle
+          : 'none';
+      const preservedRole =
+        existingSnapData.role === 'admin' && isAdminUser(user)
+          ? 'admin'
+          : 'user';
+
+      const repairedPayload: Record<string, unknown> = {
+        uid: user.uid,
+        displayName,
+        email: resolvedEmail,
+        photoURL,
+        role: preservedRole,
+        authProvider,
+        plan: preservedPlan,
+        subscriptionStatus: preservedStatus,
+        billingCycle: preservedCycle,
+        lastActiveAt: serverTimestamp(),
+        createdAt:
+          existingSnapData.createdAt instanceof Timestamp
+            ? existingSnapData.createdAt
+            : serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      if (
+        typeof existingSnapData.subscriptionExpiresAt === 'string' &&
+        existingSnapData.subscriptionExpiresAt.length <= 40
+      ) {
+        repairedPayload.subscriptionExpiresAt =
+          existingSnapData.subscriptionExpiresAt;
+      }
+
+      await setDoc(userRef, repairedPayload);
+    }
 
     const refreshed = await getDoc(userRef);
     if (!refreshed.exists()) return null;
@@ -361,6 +462,9 @@ export async function syncUserProfileOnLogin(
       '[DEWES Telemetry] Falha ao sincronizar perfil no Firestore:',
       error,
     );
+    if (existingSnapData) {
+      return normalizeUserDoc(user.uid, existingSnapData);
+    }
     return null;
   }
 }
