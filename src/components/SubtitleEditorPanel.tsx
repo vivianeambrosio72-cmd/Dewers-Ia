@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Languages,
   Link2,
+  Lock,
   Play,
   Plus,
   Redo2,
@@ -56,6 +57,13 @@ interface SubtitleEditorPanelProps {
   onPlaySegmentClip: (segment: SubtitleSegment) => void;
   onSeekTo: (time: number) => void;
   onConfirmReviewed: () => void;
+  freePlanInfo?: {
+    isFree: boolean;
+    used: number;
+    limit: number;
+    generationBlocked: boolean;
+  };
+  onOpenProUpgrade?: () => void;
 }
 
 export function SubtitleEditorPanel({
@@ -88,6 +96,8 @@ export function SubtitleEditorPanel({
   onPlaySegmentClip,
   onSeekTo,
   onConfirmReviewed,
+  freePlanInfo,
+  onOpenProUpgrade,
 }: SubtitleEditorPanelProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [replaceText, setReplaceText] = useState('');
@@ -169,12 +179,7 @@ export function SubtitleEditorPanel({
     return found?.id ?? null;
   }, [segments, currentTime]);
 
-  // Auto-scroll active line inside the subtitle list container only (never scroll the page viewport)
-  useEffect(() => {
-    if (!isPlaying || !activeSegmentId) return;
-    const rowEl = rowRefs.current[activeSegmentId];
-    scrollRowInsideContainer(rowEl, 'nearest');
-  }, [isPlaying, activeSegmentId]);
+  // Keep subtitle list completely stationary during playback; only scroll when the user manually swipes/scrolls.
 
   const editingWordKey = editingWord
     ? `${editingWord.segmentId}:${editingWord.wordId}`
@@ -267,18 +272,50 @@ export function SubtitleEditorPanel({
 
           <button
             type="button"
-            disabled={!hasVideo || isTranscribing}
+            disabled={!hasVideo || isTranscribing || Boolean(freePlanInfo?.generationBlocked)}
             onClick={onGenerateSubtitles}
             className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-amber-400 text-slate-950 text-sm font-semibold hover:bg-amber-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0"
           >
-            <Sparkles className="w-4 h-4" />
-            {isTranscribing
-              ? 'Gerando legendas...'
-              : segments.length > 0
-                ? 'Regerar legendas'
-                : 'Gerar legendas'}
+            {freePlanInfo?.generationBlocked ? (
+              <Lock className="w-4 h-4" />
+            ) : (
+              <Sparkles className="w-4 h-4" />
+            )}
+            {freePlanInfo?.generationBlocked
+              ? 'Limite Grátis (2/2) atingido'
+              : isTranscribing
+                ? 'Gerando legendas...'
+                : segments.length > 0
+                  ? 'Regerar legendas'
+                  : 'Gerar legendas'}
           </button>
         </div>
+
+        {freePlanInfo?.isFree && (
+          <div
+            className={`rounded-lg border px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs ${
+              freePlanInfo.generationBlocked
+                ? 'bg-rose-500/10 border-rose-500/35 text-rose-200'
+                : 'bg-[#090B10] border-white/10 text-slate-300'
+            }`}
+          >
+            <span>
+              {freePlanInfo.generationBlocked
+                ? `Limite do Plano Grátis atingido (${freePlanInfo.used}/${freePlanInfo.limit} vídeos gerados). Ative o PRO para gerar ou salvar novos vídeos.`
+                : `Plano Grátis: ${Math.min(freePlanInfo.used, freePlanInfo.limit)} de ${freePlanInfo.limit} vídeos gerados utilizados.`}
+            </span>
+            {onOpenProUpgrade && (
+              <button
+                type="button"
+                onClick={onOpenProUpgrade}
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-amber-400 text-slate-950 font-bold hover:bg-amber-300 transition-colors whitespace-nowrap"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Assinar PRO
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Custom Dictionary ("Palavras importantes") */}
         <div className="flex flex-col gap-1.5">
@@ -479,7 +516,7 @@ export function SubtitleEditorPanel({
         ) : (
           <div
             ref={listContainerRef}
-            className="divide-y divide-white/[0.06] max-h-[500px] overflow-y-auto"
+            className="divide-y divide-white/[0.06] max-h-[500px] overflow-y-auto overscroll-y-contain [overflow-anchor:none]"
           >
             {segments.map((seg, idx) => {
               const isCurrent = seg.id === activeSegmentId;
@@ -494,12 +531,12 @@ export function SubtitleEditorPanel({
                   ref={(el) => {
                     rowRefs.current[seg.id] = el;
                   }}
-                  className={`p-3.5 space-y-2.5 transition-colors ${
+                  className={`p-3.5 space-y-2.5 border-l-2 transition-colors ${
                     isCurrent
-                      ? 'bg-amber-400/[0.09] border-l-2 border-l-amber-400'
+                      ? 'bg-amber-400/[0.09] border-l-amber-400'
                       : isSearchMatch
-                        ? 'bg-sky-400/[0.07]'
-                        : 'hover:bg-white/[0.02]'
+                        ? 'bg-sky-400/[0.07] border-l-transparent'
+                        : 'border-l-transparent hover:bg-white/[0.02]'
                   }`}
                 >
                   {/* Row Header: Play Clip + Start/End Numeric Inputs + Tools */}

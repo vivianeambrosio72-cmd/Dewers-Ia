@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import { verifyExclusiveAdminRequest } from './api/_lib/adminAuth.js';
 
 const MAX_FILE_SIZE_BYTES = 200 * 1024 * 1024; // 200 MB
 const UPLOAD_DIR = path.join(os.tmpdir(), 'dewers-ia-uploads');
@@ -229,6 +230,32 @@ async function startServer() {
     });
   });
 
+  const handleAdminVerify = async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const result = await verifyExclusiveAdminRequest(req);
+    if (!result.ok) {
+      res.status(result.status).json({
+        authorized: false,
+        error: result.error,
+        code: result.code,
+      });
+      return;
+    }
+    res.json({
+      authorized: true,
+      uid: result.uid,
+      email: result.email,
+      provider: result.provider,
+      hasCustomClaim: result.hasCustomClaim,
+      authMode: result.hasCustomClaim
+        ? 'custom-claim-and-verified-token'
+        : 'verified-id-token-and-rules',
+    });
+  };
+
+  app.get('/api/admin/verify', handleAdminVerify);
+  app.post('/api/admin/verify', handleAdminVerify);
+
   const INLINE_MAX_BYTES = 18 * 1024 * 1024; // 18 MB inline fast path
 
   async function processTranscriptionAndRespond(params: {
@@ -431,6 +458,7 @@ async function startServer() {
 
       let response: Awaited<ReturnType<typeof ai.models.generateContent>> | undefined;
       let lastModelError: unknown;
+      let usedModelName = candidateModels[candidateModels.length - 1];
 
       for (const modelName of candidateModels) {
         try {
@@ -457,6 +485,7 @@ async function startServer() {
               }),
             2,
           );
+          usedModelName = modelName;
           console.log(
             `[DEWES Transcribe] Modelo ${modelName} respondeu em ${Date.now() - startMs}ms.`,
           );
@@ -514,10 +543,28 @@ async function startServer() {
         return;
       }
 
+      const promptTokens = Number(response.usageMetadata?.promptTokenCount || 0);
+      const candidatesTokens = Number(
+        response.usageMetadata?.candidatesTokenCount || 0,
+      );
+      const totalTokens = Number(
+        response.usageMetadata?.totalTokenCount || promptTokens + candidatesTokens,
+      );
+      const estimatedCostUsd = Number(
+        ((promptTokens * 0.15 + candidatesTokens * 0.6) / 1_000_000).toFixed(6),
+      );
+
       res.json({
         hasSpeech: true,
         detectedLanguage: parsed.detectedLanguage || language,
         segments,
+        usage: {
+          modelUsed: usedModelName,
+          promptTokens,
+          candidatesTokens,
+          totalTokens,
+          estimatedCostUsd,
+        },
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

@@ -9,6 +9,8 @@ import {
   Loader2,
   LogIn,
   LogOut,
+  ShieldCheck,
+  Sparkles,
   Terminal,
   X,
 } from 'lucide-react';
@@ -19,10 +21,29 @@ import {
   signOutUser,
 } from './firebase';
 import {
+  logTranscriptionActivity,
+  logVideoExportActivity,
+  subscribeToCurrentUserProfile,
+  subscribeToMulticaixaSettings,
+  subscribeToUserFreeQuota,
+  subscribeToUserProOrders,
+  syncUserProfileOnLogin,
+  verifyAdminSessionOnServer,
+} from './services/adminFirestoreService';
+import {
+  DEFAULT_MULTICAIXA_HOLDER,
+  DEFAULT_MULTICAIXA_NUMBER,
+  FREE_VIDEO_LIMIT,
   PRESET_DEFINITIONS,
+  type AdminVerifyResponse,
+  type MulticaixaSettingsRecord,
+  type ProOrderRecord,
   type StyleConfig,
   type SubtitleSegment,
   type SupportedLanguage,
+  type TranscriptionUsageMeta,
+  type UserFreeQuotaState,
+  type UserProfileRecord,
   type WizardStep,
 } from './types';
 import {
@@ -46,6 +67,8 @@ import { StylePanel } from './components/StylePanel';
 import { ExportStage } from './components/ExportStage';
 import { LoginScreen } from './components/LoginScreen';
 import { AdminDiagnosticPanel } from './components/AdminDiagnosticPanel';
+import { AdminDashboard } from './components/AdminDashboard';
+import { ProUpgradeModal } from './components/ProUpgradeModal';
 import {
   OfflineBanner,
   PWAInstallButton,
@@ -85,11 +108,58 @@ function readLocalDraft(): LocalDraftPayload | null {
 }
 
 export default function App() {
-  // Auth
+  // Auth & Exclusive Admin Route
   const [user, setUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfileRecord | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [showAdminDiag, setShowAdminDiag] = useState(false);
+  const [showProModal, setShowProModal] = useState(false);
+  const [proLimitMessage, setProLimitMessage] = useState<string | null>(null);
+  const [freeQuota, setFreeQuota] = useState<UserFreeQuotaState>({
+    generatedCount: 0,
+    generatedVideoNames: [],
+    savedVideosCount: 0,
+    savedVideoKeys: [],
+    loaded: false,
+  });
+  const [multicaixaSettings, setMulticaixaSettings] =
+    useState<MulticaixaSettingsRecord>({
+      id: 'multicaixa_express',
+      multicaixaNumber: DEFAULT_MULTICAIXA_NUMBER,
+      whatsappNumber: '',
+      holderName: DEFAULT_MULTICAIXA_HOLDER,
+      updatedBy: '',
+      updatedAt: '',
+    });
+  const [userProOrders, setUserProOrders] = useState<ProOrderRecord[]>([]);
+  const [pathname, setPathname] = useState<string>(() =>
+    typeof window !== 'undefined' ? window.location.pathname || '/' : '/',
+  );
+  const [adminVerifyState, setAdminVerifyState] = useState<
+    'idle' | 'checking' | 'authorized' | 'denied'
+  >('idle');
+  const [adminVerifyResult, setAdminVerifyResult] =
+    useState<AdminVerifyResponse | null>(null);
   const isAdmin = useMemo(() => isAdminUser(user), [user]);
+  const isEffectivePro = useMemo(() => {
+    if (userProfile?.plan !== 'PRO' || userProfile?.subscriptionStatus !== 'active') {
+      return false;
+    }
+    if (!userProfile.subscriptionExpiresAt) {
+      return true;
+    }
+    const expiryMs = Date.parse(userProfile.subscriptionExpiresAt);
+    return !Number.isFinite(expiryMs) || expiryMs > Date.now();
+  }, [userProfile]);
+  const isFreePlan = !isAdmin && !isEffectivePro;
+  const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/');
+
+  const navigateTo = useCallback((nextPath: string) => {
+    if (typeof window !== 'undefined' && window.location.pathname !== nextPath) {
+      window.history.pushState({}, '', nextPath);
+    }
+    setPathname(nextPath);
+  }, []);
 
   // Sequential Wizard
   const [step, setStep] = useState<WizardStep>(1);
@@ -142,16 +212,96 @@ export default function App() {
   const [alert, setAlert] = useState<BannerAlert | null>(null);
 
   useEffect(() => {
+    const onPopState = () => {
+      setPathname(window.location.pathname || '/');
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
       setAuthReady(true);
       if (!nextUser) {
+        setUserProfile(null);
+        setUserProOrders([]);
+        setFreeQuota({
+          generatedCount: 0,
+          generatedVideoNames: [],
+          savedVideosCount: 0,
+          savedVideoKeys: [],
+          loaded: false,
+        });
+        setProLimitMessage(null);
+        setShowProModal(false);
+        setAdminVerifyState('idle');
+        setAdminVerifyResult(null);
         setShowAdminDiag(false);
         setStep(1);
+      } else {
+        void syncUserProfileOnLogin(nextUser).then((profile) => {
+          if (profile) setUserProfile(profile);
+        });
       }
     });
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsubProfile = subscribeToCurrentUserProfile(user.uid, (profile) => {
+      if (profile) setUserProfile(profile);
+    });
+    const unsubSettings = subscribeToMulticaixaSettings((settings) => {
+      setMulticaixaSettings(settings);
+    });
+    const unsubOrders = subscribeToUserProOrders(user.uid, (orders) => {
+      setUserProOrders(orders);
+    });
+    const unsubQuota = subscribeToUserFreeQuota(user.uid, (quota) => {
+      setFreeQuota(quota);
+    });
+    return () => {
+      unsubProfile();
+      unsubSettings();
+      unsubOrders();
+      unsubQuota();
+    };
+  }, [user]);
+
+  useEffect(() => {
+    if (!isAdminRoute || !user) {
+      return;
+    }
+    if (!isAdminUser(user)) {
+      setAdminVerifyState('denied');
+      setAdminVerifyResult({
+        authorized: false,
+        error:
+          'Acesso negado. Apenas a conta administradora principal autorizada pode aceder a esta área.',
+        code: 'ADMIN_FORBIDDEN',
+      });
+      return;
+    }
+
+    let cancelled = false;
+    setAdminVerifyState('checking');
+    void verifyAdminSessionOnServer(user).then((res) => {
+      if (cancelled) return;
+      if (res.authorized) {
+        setAdminVerifyState('authorized');
+        setAdminVerifyResult(res);
+      } else {
+        setAdminVerifyState('denied');
+        setAdminVerifyResult(res);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdminRoute, user]);
 
   useEffect(() => {
     return () => {
@@ -343,9 +493,50 @@ export default function App() {
       reader.readAsDataURL(file);
     });
 
+  const currentVideoKey = useMemo(() => {
+    if (videoFile) {
+      return `${videoFile.name}_${videoFile.size}`;
+    }
+    return videoFileName || projectTitle || 'video';
+  }, [videoFile, videoFileName, projectTitle]);
+
+  const isGenerationBlocked = useMemo(
+    () => isFreePlan && freeQuota.generatedCount >= FREE_VIDEO_LIMIT,
+    [isFreePlan, freeQuota.generatedCount],
+  );
+
+  const isSaveBlocked = useMemo(
+    () =>
+      isFreePlan &&
+      (freeQuota.savedVideosCount >= FREE_VIDEO_LIMIT ||
+        (freeQuota.generatedCount >= FREE_VIDEO_LIMIT &&
+          Boolean(videoFileName) &&
+          !freeQuota.generatedVideoNames.includes(videoFileName || ''))),
+    [
+      isFreePlan,
+      freeQuota.savedVideosCount,
+      freeQuota.generatedCount,
+      freeQuota.generatedVideoNames,
+      videoFileName,
+    ],
+  );
+
+  const openProModalWithLimit = useCallback((message: string) => {
+    setProLimitMessage(message);
+    setAlert({ type: 'error', message });
+    setShowProModal(true);
+  }, []);
+
   const runGeminiTranscription = useCallback(
     async (targetLang: SupportedLanguage) => {
       if (!videoFile) return;
+
+      if (isGenerationBlocked) {
+        openProModalWithLimit(
+          'Limite do Plano Grátis atingido (2 de 2 vídeos gerados). Assine o plano PRO para continuar a gerar vídeos.',
+        );
+        return;
+      }
 
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
         setAlert({
@@ -490,6 +681,7 @@ export default function App() {
       ): Promise<{
         segments: SubtitleSegment[];
         detectedLanguage: string;
+        usage?: TranscriptionUsageMeta;
       }> => {
         const partLabel = totalParts > 1 ? ` (${partIdx + 1}/${totalParts})` : '';
         const basePct = 10 + Math.round((partIdx / totalParts) * 85);
@@ -500,6 +692,7 @@ export default function App() {
         const sendViaChunkedUpload = async (): Promise<{
           segments: SubtitleSegment[];
           detectedLanguage: string;
+          usage?: TranscriptionUsageMeta;
         }> => {
           const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           const totalChunks = Math.ceil(targetFile.size / CHUNK_SIZE_BYTES);
@@ -568,6 +761,7 @@ export default function App() {
           let data: {
             segments?: SubtitleSegment[];
             detectedLanguage?: string;
+            usage?: TranscriptionUsageMeta;
             error?: string;
             code?: string;
           } = {};
@@ -593,12 +787,14 @@ export default function App() {
           return {
             segments: data.segments,
             detectedLanguage: data.detectedLanguage || targetLang,
+            usage: data.usage,
           };
         };
 
         const sendViaJsonFallback = async (): Promise<{
           segments: SubtitleSegment[];
           detectedLanguage: string;
+          usage?: TranscriptionUsageMeta;
         }> => {
           setTranscribeStage(`Reenviando áudio em formato compatível${partLabel}...`);
           setTranscribeProgress(uploadMaxPct);
@@ -622,6 +818,7 @@ export default function App() {
           let data: {
             segments?: SubtitleSegment[];
             detectedLanguage?: string;
+            usage?: TranscriptionUsageMeta;
             error?: string;
             code?: string;
           } = {};
@@ -641,6 +838,7 @@ export default function App() {
           return {
             segments: data.segments,
             detectedLanguage: data.detectedLanguage || targetLang,
+            usage: data.usage,
           };
         };
 
@@ -659,6 +857,7 @@ export default function App() {
           return await new Promise<{
             segments: SubtitleSegment[];
             detectedLanguage: string;
+            usage?: TranscriptionUsageMeta;
           }>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             xhr.open('POST', '/api/transcribe');
@@ -801,6 +1000,10 @@ export default function App() {
         }
       };
 
+      let totalTokensSum = 0;
+      let estimatedCostSum = 0;
+      let lastModelUsed = 'gemini-3.5-transcribe';
+
       try {
         const mergedSegments: SubtitleSegment[] = [];
         let finalDetectedLanguage: string = targetLang;
@@ -816,6 +1019,13 @@ export default function App() {
           );
           if (idx === 0 && partResult.detectedLanguage) {
             finalDetectedLanguage = partResult.detectedLanguage;
+          }
+          if (partResult.usage) {
+            totalTokensSum += partResult.usage.totalTokens || 0;
+            estimatedCostSum += partResult.usage.estimatedCostUsd || 0;
+            if (partResult.usage.modelUsed) {
+              lastModelUsed = partResult.usage.modelUsed;
+            }
           }
 
           const offset = part.startTime;
@@ -853,6 +1063,25 @@ export default function App() {
           (acc, s) => acc + s.words.filter((w) => w.needsReview).length,
           0,
         );
+        const totalWordCount = mergedSegments.reduce(
+          (acc, s) => acc + s.words.length,
+          0,
+        );
+        if (user) {
+          void logTranscriptionActivity({
+            user,
+            userPlan: isEffectivePro ? 'PRO' : 'FREE',
+            videoFileName: videoFile.name,
+            durationSeconds: duration || 0,
+            language: targetLang,
+            segmentCount: mergedSegments.length,
+            wordCount: totalWordCount,
+            modelUsed: lastModelUsed,
+            estimatedCostUsd: Number(estimatedCostSum.toFixed(6)),
+            totalTokens: totalTokensSum,
+            status: 'completed',
+          });
+        }
         setAlert({
           type: 'success',
           message:
@@ -862,6 +1091,23 @@ export default function App() {
         });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
+        if (user) {
+          void logTranscriptionActivity({
+            user,
+            userPlan: isEffectivePro ? 'PRO' : 'FREE',
+            videoFileName: videoFile.name,
+            durationSeconds: duration || 0,
+            language: targetLang,
+            segmentCount: 0,
+            wordCount: 0,
+            modelUsed: lastModelUsed,
+            estimatedCostUsd: Number(estimatedCostSum.toFixed(6)),
+            totalTokens: totalTokensSum,
+            status: 'error',
+            errorCode: 'TRANSCRIPTION_ERROR',
+            errorMessage: msg,
+          });
+        }
         setAlert({ type: 'error', message: msg });
       } finally {
         if (aiTicker) clearInterval(aiTicker);
@@ -871,20 +1117,38 @@ export default function App() {
         }, 300);
       }
     },
-    [videoFile, customDictionary, duration],
+    [
+      videoFile,
+      customDictionary,
+      duration,
+      user,
+      isEffectivePro,
+      isGenerationBlocked,
+      openProModalWithLimit,
+    ],
   );
 
   // Step 1 -> Step 2 (Auto-transcribe upon entering Step 2 if needed)
   const handleGoToStep2 = () => {
     if (!videoUrl) return;
+    const currentKey = videoFile
+      ? `${videoFile.name}_${videoFile.size}_${language}`
+      : '';
+    const needsNewGeneration =
+      Boolean(videoFile) && (segments.length === 0 || transcribedKey !== currentKey);
+
+    if (needsNewGeneration && isGenerationBlocked) {
+      openProModalWithLimit(
+        'Limite do Plano Grátis atingido (2 de 2 vídeos gerados). Assine o plano PRO para gerar mais vídeos.',
+      );
+      return;
+    }
+
     setAlert(null);
     setStep(2);
     setMaxReachedStep((prev) => Math.max(prev, 2));
-    if (videoFile) {
-      const currentKey = `${videoFile.name}_${videoFile.size}_${language}`;
-      if (segments.length === 0 || transcribedKey !== currentKey) {
-        runGeminiTranscription(language);
-      }
+    if (needsNewGeneration) {
+      runGeminiTranscription(language);
     }
   };
 
@@ -1115,6 +1379,12 @@ export default function App() {
 
   const handleDownloadSrt = () => {
     if (segments.length === 0) return;
+    if (isSaveBlocked) {
+      openProModalWithLimit(
+        'Limite do Plano Grátis atingido (2 vídeos). O salvamento está bloqueado até ativar o plano PRO.',
+      );
+      return;
+    }
     const srt = generateSrtContent(segments);
     const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -1129,10 +1399,26 @@ export default function App() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+
+    if (user) {
+      void logVideoExportActivity({
+        user,
+        userPlan: isEffectivePro ? 'PRO' : 'FREE',
+        videoKey: currentVideoKey,
+        videoFileName: videoFileName || `${baseName}.mp4`,
+        exportType: 'srt',
+      });
+    }
   };
 
   const handleExportVideo = async () => {
     if (!videoUrl || segments.length === 0) return;
+    if (isSaveBlocked) {
+      openProModalWithLimit(
+        'Limite do Plano Grátis atingido (2 vídeos). O salvamento está bloqueado até ativar o plano PRO.',
+      );
+      return;
+    }
     setAlert(null);
     setIsExporting(true);
     setExportProgress(0);
@@ -1161,6 +1447,16 @@ export default function App() {
       a.click();
       a.remove();
       URL.revokeObjectURL(downloadUrl);
+
+      if (user) {
+        void logVideoExportActivity({
+          user,
+          userPlan: isEffectivePro ? 'PRO' : 'FREE',
+          videoKey: currentVideoKey,
+          videoFileName: videoFileName || `${baseName}.mp4`,
+          exportType: 'video',
+        });
+      }
 
       setAlert({
         type: 'success',
@@ -1221,6 +1517,71 @@ export default function App() {
     );
   }
 
+  if (isAdminRoute) {
+    if (!isAdmin || adminVerifyState === 'denied') {
+      return (
+        <div className="min-h-screen bg-[#090B10] text-slate-100 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl bg-[#10131C] border border-rose-500/30 p-6 space-y-4 text-center shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center mx-auto">
+              <AlertCircle className="w-6 h-6 text-rose-400" />
+            </div>
+            <div className="space-y-1.5">
+              <h1 className="text-lg font-bold text-white">
+                403 · Acesso Administrativo Restrito
+              </h1>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                {adminVerifyResult?.error ||
+                  'Esta rota é exclusiva da administradora principal autorizada. A sua conta atual não possui privilégios administrativos.'}
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => navigateTo('/')}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-amber-400 text-slate-950 text-xs font-bold hover:bg-amber-300 transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Voltar ao Estúdio
+              </button>
+              <button
+                type="button"
+                onClick={() => signOutUser()}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-semibold text-slate-200 hover:bg-white/10 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                Terminar Sessão
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (adminVerifyState === 'checking' || adminVerifyState === 'idle' || !adminVerifyResult) {
+      return (
+        <div className="min-h-screen bg-[#090B10] text-slate-200 flex items-center justify-center p-4">
+          <div className="flex items-center gap-3 text-sm text-slate-300">
+            <Loader2 className="w-5 h-5 animate-spin text-amber-400" />
+            <span>Validando credenciais administrativas no servidor...</span>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <>
+        <AdminDashboard
+          user={user}
+          serverVerification={adminVerifyResult}
+          onBackToStudio={() => navigateTo('/')}
+          onSignOut={() => signOutUser()}
+        />
+        <OfflineBanner />
+        <PWAUpdateBanner />
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#090B10] text-slate-100 flex flex-col">
       {/* Top Bar */}
@@ -1236,19 +1597,54 @@ export default function App() {
             <span>Dewers IA</span>
           </button>
 
-          {/* Zone 2: Install PWA, Admin Diagnostic (Google Admin only) & Auth Action */}
+          {/* Zone 2: PRO Plan, Install PWA, Exclusive Admin Controls (dewersmatari@gmail.com only) & Auth Action */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <PWAInstallButton />
-            {isAdmin && (
+            {user && (
               <button
                 type="button"
-                onClick={() => setShowAdminDiag(true)}
-                title="Painel de Diagnóstico Firebase (Modo Desenvolvedor)"
-                className="pwa-touch-btn inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-purple-500/15 border border-purple-400/30 text-xs font-medium text-purple-200 hover:bg-purple-500/25 transition-colors whitespace-nowrap shrink-0 min-h-[44px] sm:min-h-[36px]"
+                onClick={() => {
+                  setProLimitMessage(null);
+                  setShowProModal(true);
+                }}
+                title="Plano PRO via Multicaixa Express e WhatsApp"
+                className={`pwa-touch-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 min-h-[44px] sm:min-h-[36px] ${
+                  isEffectivePro
+                    ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-200 hover:bg-emerald-500/25'
+                    : 'bg-amber-400/15 border-amber-400/35 text-amber-200 hover:bg-amber-400/25'
+                }`}
               >
-                <Terminal className="w-3.5 h-3.5 text-purple-300" />
-                <span className="hidden md:inline">Diagnóstico</span>
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>
+                  {isEffectivePro
+                    ? 'PRO Ativo'
+                    : isFreePlan
+                      ? `Assinar PRO (${Math.min(freeQuota.generatedCount, FREE_VIDEO_LIMIT)}/${FREE_VIDEO_LIMIT})`
+                      : 'Assinar PRO'}
+                </span>
               </button>
+            )}
+            {isAdmin && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => navigateTo('/admin')}
+                  title="Painel Administrativo Exclusivo"
+                  className="pwa-touch-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-400/15 border border-amber-400/35 text-xs font-semibold text-amber-200 hover:bg-amber-400/25 transition-colors whitespace-nowrap shrink-0 min-h-[44px] sm:min-h-[36px]"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-amber-300" />
+                  <span className="hidden md:inline">Painel Admin</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAdminDiag(true)}
+                  title="Painel de Diagnóstico Firebase (Modo Desenvolvedor)"
+                  className="pwa-touch-btn inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-purple-500/15 border border-purple-400/30 text-xs font-medium text-purple-200 hover:bg-purple-500/25 transition-colors whitespace-nowrap shrink-0 min-h-[44px] sm:min-h-[36px]"
+                >
+                  <Terminal className="w-3.5 h-3.5 text-purple-300" />
+                  <span className="hidden md:inline">Diagnóstico</span>
+                </button>
+              </>
             )}
             {user ? (
               <div className="flex items-center gap-2 sm:gap-3">
@@ -1503,6 +1899,20 @@ export default function App() {
                         'Legendas confirmadas como revisadas! Clique em "Continuar" para exportar o vídeo.',
                     });
                   }}
+                  freePlanInfo={{
+                    isFree: isFreePlan,
+                    used: freeQuota.generatedCount,
+                    limit: FREE_VIDEO_LIMIT,
+                    generationBlocked: isGenerationBlocked,
+                  }}
+                  onOpenProUpgrade={() => {
+                    setProLimitMessage(
+                      isGenerationBlocked
+                        ? 'Limite do Plano Grátis atingido (2 vídeos). Assine o PRO para continuar.'
+                        : null,
+                    );
+                    setShowProModal(true);
+                  }}
                 />
               </section>
             </div>
@@ -1521,9 +1931,37 @@ export default function App() {
             onCancelExport={() => exportAbortRef.current?.abort()}
             onDownloadSrt={handleDownloadSrt}
             onBackToStep2={() => setStep(2)}
+            freePlanInfo={{
+              isFree: isFreePlan,
+              savedUsed: freeQuota.savedVideosCount,
+              limit: FREE_VIDEO_LIMIT,
+              saveBlocked: isSaveBlocked,
+            }}
+            onOpenProUpgrade={() => {
+              setProLimitMessage(
+                isSaveBlocked
+                  ? 'Limite de salvamento do Plano Grátis atingido (2 vídeos). Assine o PRO para baixar.'
+                  : null,
+              );
+              setShowProModal(true);
+            }}
           />
         )}
       </main>
+      {user && (
+        <ProUpgradeModal
+          open={showProModal}
+          onClose={() => {
+            setShowProModal(false);
+            setProLimitMessage(null);
+          }}
+          user={user}
+          userProfile={userProfile}
+          multicaixaSettings={multicaixaSettings}
+          userOrders={userProOrders}
+          limitMessage={proLimitMessage}
+        />
+      )}
       {isAdmin && (
         <AdminDiagnosticPanel
           open={showAdminDiag}

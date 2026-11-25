@@ -359,6 +359,7 @@ export async function transcribeBufferAndRespond(params: {
     let response: Awaited<ReturnType<typeof ai.models.generateContent>> | undefined;
     let lastModelError: unknown;
 
+    let usedModelName = candidateModels[candidateModels.length - 1];
     for (const modelName of candidateModels) {
       try {
         const isFlashLite = modelName === 'gemini-3.1-flash-lite';
@@ -384,6 +385,7 @@ export async function transcribeBufferAndRespond(params: {
             }),
           2,
         );
+        usedModelName = modelName;
         break;
       } catch (err) {
         lastModelError = err;
@@ -435,10 +437,29 @@ export async function transcribeBufferAndRespond(params: {
       return;
     }
 
+    const promptTokens = Number(response.usageMetadata?.promptTokenCount || 0);
+    const candidatesTokens = Number(
+      response.usageMetadata?.candidatesTokenCount || 0,
+    );
+    const totalTokens = Number(
+      response.usageMetadata?.totalTokenCount ||
+        promptTokens + candidatesTokens,
+    );
+    const estimatedCostUsd = Number(
+      ((promptTokens * 0.15 + candidatesTokens * 0.6) / 1_000_000).toFixed(6),
+    );
+
     sendJson(res, 200, {
       hasSpeech: true,
       detectedLanguage: parsed.detectedLanguage || language,
       segments,
+      usage: {
+        modelUsed: usedModelName,
+        promptTokens,
+        candidatesTokens,
+        totalTokens,
+        estimatedCostUsd,
+      },
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

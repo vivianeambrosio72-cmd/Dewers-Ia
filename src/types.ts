@@ -209,3 +209,208 @@ export const PRESET_DEFINITIONS: Record<
     },
   },
 };
+
+export type UserPlan = 'FREE' | 'PRO';
+export type SubscriptionStatus =
+  | 'free'
+  | 'active'
+  | 'pending'
+  | 'expired'
+  | 'cancelled';
+export type BillingCycle = 'none' | 'monthly' | 'annual';
+export type AuthProviderKind = 'google' | 'email';
+
+export interface TranscriptionUsageMeta {
+  modelUsed: string;
+  promptTokens: number;
+  candidatesTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+}
+
+export interface UserProfileRecord {
+  uid: string;
+  displayName: string;
+  email: string;
+  photoURL?: string | null;
+  role: 'user' | 'admin';
+  authProvider: AuthProviderKind;
+  plan: UserPlan;
+  subscriptionStatus: SubscriptionStatus;
+  billingCycle: BillingCycle;
+  subscriptionExpiresAt?: string | null;
+  lastActiveAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TranscriptionLogRecord {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userPlan: UserPlan;
+  videoFileName: string;
+  durationSeconds: number;
+  minutesProcessed: number;
+  language: SupportedLanguage;
+  segmentCount: number;
+  wordCount: number;
+  modelUsed: string;
+  estimatedCostUsd: number;
+  totalTokens: number;
+  status: 'completed' | 'error';
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  resolvedByAdmin?: boolean;
+  createdAt: string;
+}
+
+export type PaymentStatus = 'confirmed' | 'pending' | 'refused';
+
+export interface PaymentRecord {
+  id: string;
+  userId: string;
+  userEmail: string;
+  plan: 'PRO';
+  billingCycle: 'monthly' | 'annual';
+  amountBrl: number;
+  status: PaymentStatus;
+  subscriptionStatus: Exclude<SubscriptionStatus, 'free'>;
+  paymentMethod: string;
+  notes?: string | null;
+  expiresAt?: string | null;
+  recordedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AdminAuditAction =
+  | 'UPDATE_USER_PLAN'
+  | 'CREATE_PAYMENT'
+  | 'UPDATE_PAYMENT_STATUS'
+  | 'RESOLVE_TRANSCRIPTION_ERROR'
+  | 'REVOKE_SUBSCRIPTION'
+  | 'ADMIN_VERIFY'
+  | 'APPROVE_PRO_ORDER'
+  | 'REJECT_PRO_ORDER'
+  | 'UPDATE_PAYMENT_SETTINGS';
+
+export interface AdminAuditLogRecord {
+  id: string;
+  adminUid: string;
+  adminEmail: string;
+  action: AdminAuditAction;
+  targetType:
+    | 'user'
+    | 'payment'
+    | 'transcription'
+    | 'pro_order'
+    | 'settings'
+    | 'system';
+  targetId: string;
+  targetEmail?: string | null;
+  summary: string;
+  previousValue?: string | null;
+  newValue?: string | null;
+  createdAt: string;
+}
+
+export interface AdminVerifyResponse {
+  authorized: boolean;
+  uid?: string;
+  email?: string;
+  provider?: string;
+  hasCustomClaim?: boolean;
+  authMode?: string;
+  error?: string;
+  code?: string;
+}
+
+export type ProOrderStatus = 'PENDENTE' | 'APROVADO' | 'REJEITADO';
+
+export interface MulticaixaSettingsRecord {
+  id: string;
+  multicaixaNumber: string;
+  whatsappNumber: string;
+  holderName: string;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export interface ProOrderRecord {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  billingCycle: 'monthly' | 'annual';
+  planLabel: 'PRO Mensal' | 'PRO Anual';
+  amountKz: 1000 | 10000;
+  durationDays: 30 | 365;
+  status: ProOrderStatus;
+  approvedBy?: string | null;
+  approvedByUid?: string | null;
+  rejectionReason?: string | null;
+  activatedStartAt?: string | null;
+  activatedExpiresAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const DEFAULT_MULTICAIXA_PLACEHOLDER = '[INSERIR O MEU NÚMERO]';
+export const DEFAULT_MULTICAIXA_NUMBER = '+244 936 964 366';
+export const DEFAULT_MULTICAIXA_HOLDER = 'Adelino D';
+
+export const PRO_PLAN_CATALOG: Record<
+  'monthly' | 'annual',
+  {
+    billingCycle: 'monthly' | 'annual';
+    planLabel: 'PRO Mensal' | 'PRO Anual';
+    amountKz: 1000 | 10000;
+    priceFormatted: string;
+    durationDays: 30 | 365;
+    durationLabel: string;
+    description: string;
+  }
+> = {
+  monthly: {
+    billingCycle: 'monthly',
+    planLabel: 'PRO Mensal',
+    amountKz: 1000,
+    priceFormatted: '1.000 Kz',
+    durationDays: 30,
+    durationLabel: '30 dias',
+    description: 'Acesso completo ao plano PRO durante 30 dias.',
+  },
+  annual: {
+    billingCycle: 'annual',
+    planLabel: 'PRO Anual',
+    amountKz: 10000,
+    priceFormatted: '10.000 Kz',
+    durationDays: 365,
+    durationLabel: '365 dias',
+    description: 'Poupança anual com acesso PRO durante 365 dias.',
+  },
+};
+
+export const FREE_VIDEO_LIMIT = 2;
+
+export type VideoExportType = 'video' | 'srt';
+
+export interface VideoExportLogRecord {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userPlan: UserPlan;
+  videoKey: string;
+  videoFileName: string;
+  exportType: VideoExportType;
+  createdAt: string;
+}
+
+export interface UserFreeQuotaState {
+  generatedCount: number;
+  generatedVideoNames: string[];
+  savedVideosCount: number;
+  savedVideoKeys: string[];
+  loaded: boolean;
+}

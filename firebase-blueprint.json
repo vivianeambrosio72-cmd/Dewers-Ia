@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Perfil privado do usuário autenticado no Dewers IA.",
+      "description": "Perfil privado e plano de assinatura do utilizador autenticado no Dewers IA.",
       "type": "object",
       "properties": {
         "uid": {
@@ -10,20 +10,20 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "UID do Firebase Auth do usuário."
+          "description": "UID do Firebase Auth do utilizador."
         },
         "displayName": {
           "type": "string",
           "minLength": 1,
           "maxLength": 120,
-          "description": "Nome de exibição do usuário."
+          "description": "Nome de exibição do utilizador."
         },
         "email": {
           "type": "string",
           "format": "email",
           "minLength": 3,
           "maxLength": 254,
-          "description": "Endereço de e-mail do usuário (Google ou E-mail/Senha)."
+          "description": "Endereço de e-mail do utilizador."
         },
         "photoURL": {
           "type": "string",
@@ -33,29 +33,369 @@
         "role": {
           "type": "string",
           "enum": ["user", "admin"],
-          "description": "Papel do usuário; apenas a conta admin autenticada via Google recebe admin."
+          "description": "Nível de acesso; apenas dewersmatari@gmail.com pode ter papel admin."
         },
         "authProvider": {
           "type": "string",
           "enum": ["google", "email"],
-          "description": "Método de autenticação utilizado (google ou email)."
+          "description": "Método de autenticação utilizado."
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["FREE", "PRO"],
+          "description": "Plano atual do utilizador."
+        },
+        "subscriptionStatus": {
+          "type": "string",
+          "enum": ["free", "active", "pending", "expired", "cancelled"],
+          "description": "Estado atual da assinatura."
+        },
+        "billingCycle": {
+          "type": "string",
+          "enum": ["none", "monthly", "annual"],
+          "description": "Ciclo de faturação da assinatura PRO."
+        },
+        "subscriptionExpiresAt": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Data ISO de expiração da assinatura PRO."
+        },
+        "lastActiveAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Último acesso registado."
         },
         "createdAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Timestamp de criação do perfil."
+          "description": "Data de registo do utilizador."
         },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Timestamp da última atualização."
+          "description": "Última atualização do perfil."
         }
       },
-      "required": ["uid", "displayName", "email", "createdAt", "updatedAt"]
+      "required": [
+        "uid",
+        "displayName",
+        "email",
+        "role",
+        "authProvider",
+        "plan",
+        "subscriptionStatus",
+        "billingCycle",
+        "lastActiveAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TranscriptionLog": {
+      "title": "TranscriptionLog",
+      "description": "Registo de cada transcrição realizada ou erro de processamento de IA.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Identificador único da transcrição."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do utilizador que solicitou a transcrição."
+        },
+        "userEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "E-mail do utilizador."
+        },
+        "userPlan": {
+          "type": "string",
+          "enum": ["FREE", "PRO"],
+          "description": "Plano do utilizador no momento da transcrição."
+        },
+        "videoFileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Nome do ficheiro de vídeo."
+        },
+        "durationSeconds": {
+          "type": "number",
+          "description": "Duração do vídeo em segundos."
+        },
+        "minutesProcessed": {
+          "type": "number",
+          "description": "Minutos processados."
+        },
+        "language": {
+          "type": "string",
+          "enum": ["pt-BR", "en-US", "es-ES", "fr-FR"],
+          "description": "Idioma utilizado na transcrição."
+        },
+        "segmentCount": {
+          "type": "number",
+          "description": "Quantidade de blocos de legenda gerados."
+        },
+        "wordCount": {
+          "type": "number",
+          "description": "Quantidade de palavras transcritas."
+        },
+        "modelUsed": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Modelo de IA utilizado."
+        },
+        "estimatedCostUsd": {
+          "type": "number",
+          "description": "Custo estimado em USD da chamada Gemini."
+        },
+        "totalTokens": {
+          "type": "number",
+          "description": "Total de tokens consumidos pela IA."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["completed", "error"],
+          "description": "Resultado da transcrição."
+        },
+        "errorCode": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Código do erro técnico quando status é error."
+        },
+        "errorMessage": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Mensagem do erro técnico quando status é error."
+        },
+        "resolvedByAdmin": {
+          "type": "boolean",
+          "description": "Indica se o erro foi marcado como analisado pelo administrador."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp do processamento."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userEmail",
+        "userPlan",
+        "videoFileName",
+        "durationSeconds",
+        "minutesProcessed",
+        "language",
+        "segmentCount",
+        "wordCount",
+        "modelUsed",
+        "estimatedCostUsd",
+        "totalTokens",
+        "status",
+        "createdAt"
+      ]
+    },
+    "PaymentRecord": {
+      "title": "PaymentRecord",
+      "description": "Registo de pagamento e ciclo de assinatura PRO gerido pelo administrador.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Identificador do pagamento."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do utilizador associado."
+        },
+        "userEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "E-mail do utilizador."
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["PRO"],
+          "description": "Plano adquirido."
+        },
+        "billingCycle": {
+          "type": "string",
+          "enum": ["monthly", "annual"],
+          "description": "Periodicidade mensal ou anual."
+        },
+        "amountBrl": {
+          "type": "number",
+          "description": "Valor do pagamento em Reais (BRL)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["confirmed", "pending", "refused"],
+          "description": "Estado financeiro do pagamento."
+        },
+        "subscriptionStatus": {
+          "type": "string",
+          "enum": ["active", "pending", "expired", "cancelled"],
+          "description": "Estado da assinatura associada."
+        },
+        "paymentMethod": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Meio de pagamento (PIX, Cartão, Boleto, etc.)."
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Observações administrativas."
+        },
+        "expiresAt": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Data ISO de vencimento da assinatura."
+        },
+        "recordedBy": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "E-mail do administrador que registou ou atualizou."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data de criação do pagamento."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Última atualização do pagamento."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userEmail",
+        "plan",
+        "billingCycle",
+        "amountBrl",
+        "status",
+        "subscriptionStatus",
+        "paymentMethod",
+        "recordedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminAuditLog": {
+      "title": "AdminAuditLog",
+      "description": "Histórico imutável de ações administrativas realizadas por dewersmatari@gmail.com.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Identificador único do registo de auditoria."
+        },
+        "adminUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID da conta administradora."
+        },
+        "adminEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "E-mail da conta administradora."
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "UPDATE_USER_PLAN",
+            "CREATE_PAYMENT",
+            "UPDATE_PAYMENT_STATUS",
+            "RESOLVE_TRANSCRIPTION_ERROR",
+            "REVOKE_SUBSCRIPTION",
+            "ADMIN_VERIFY",
+            "APPROVE_PRO_ORDER",
+            "REJECT_PRO_ORDER",
+            "UPDATE_PAYMENT_SETTINGS"
+          ],
+          "description": "Tipo de ação administrativa."
+        },
+        "targetType": {
+          "type": "string",
+          "enum": ["user", "payment", "transcription", "pro_order", "settings", "system"],
+          "description": "Tipo de entidade afetada."
+        },
+        "targetId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "ID do recurso afetado."
+        },
+        "targetEmail": {
+          "type": "string",
+          "maxLength": 254,
+          "description": "E-mail do utilizador afetado, quando aplicável."
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "Descrição clara da alteração realizada."
+        },
+        "previousValue": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Valor anterior."
+        },
+        "newValue": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Novo valor aplicado."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data e hora da ação."
+        }
+      },
+      "required": [
+        "id",
+        "adminUid",
+        "adminEmail",
+        "action",
+        "targetType",
+        "targetId",
+        "summary",
+        "createdAt"
+      ]
     },
     "SubtitleProject": {
       "title": "SubtitleProject",
-      "description": "Projeto de legendagem e transições automáticas salvo pelo usuário.",
+      "description": "Projetos legados de legendagem protegidos por propriedade.",
       "type": "object",
       "properties": {
         "id": {
@@ -76,52 +416,52 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 160,
-          "description": "Título do projeto ou nome do vídeo."
+          "description": "Título do projeto."
         },
         "videoFileName": {
           "type": "string",
           "minLength": 1,
           "maxLength": 200,
-          "description": "Nome original do arquivo de vídeo."
+          "description": "Nome do ficheiro de vídeo."
         },
         "duration": {
           "type": "number",
-          "description": "Duração do vídeo em segundos."
+          "description": "Duração em segundos."
         },
         "language": {
           "type": "string",
           "enum": ["pt-BR", "en-US", "es-ES", "fr-FR"],
-          "description": "Código do idioma selecionado para transcrição."
+          "description": "Idioma do projeto."
         },
         "styleConfig": {
           "type": "object",
-          "description": "Configurações visuais dos 8 estilos profissionais (preset, fonte, escala 50-150%, cores, posição vertical 5-95%)."
+          "description": "Configuração visual das legendas."
         },
         "transitionConfig": {
           "type": "object",
-          "description": "Configurações de detecção de pausas, biblioteca de transições e duração do efeito."
+          "description": "Configuração de transições."
         },
         "transitionPoints": {
           "type": "array",
-          "description": "Lista de pontos de transição automáticos ou manuais na timeline."
+          "description": "Pontos de transição."
         },
         "segments": {
           "type": "array",
-          "description": "Lista de segmentos de legenda com palavras e tempos."
+          "description": "Blocos de legendas."
         },
         "wordCount": {
           "type": "number",
-          "description": "Contagem total de palavras transcritas."
+          "description": "Total de palavras."
         },
         "createdAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Timestamp de criação do projeto."
+          "description": "Data de criação."
         },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Timestamp da última modificação."
+          "description": "Data de atualização."
         }
       },
       "required": [
@@ -138,6 +478,223 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "MulticaixaSettings": {
+      "title": "MulticaixaSettings",
+      "description": "Configuração do número Multicaixa Express e WhatsApp para pagamentos manuais PRO.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Identificador da configuração (multicaixa_express)."
+        },
+        "multicaixaNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Número Multicaixa Express configurável pela administração."
+        },
+        "whatsappNumber": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Número WhatsApp com indicativo para receber comprovativos."
+        },
+        "holderName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Nome do titular da conta Multicaixa Express."
+        },
+        "updatedBy": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "E-mail do administrador que atualizou."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data da última atualização."
+        }
+      },
+      "required": [
+        "id",
+        "multicaixaNumber",
+        "updatedBy",
+        "updatedAt"
+      ]
+    },
+    "ProOrder": {
+      "title": "ProOrder",
+      "description": "Pedido de ativação PRO via Multicaixa Express e comprovativo por WhatsApp.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Identificador único do pedido PRO."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do utilizador que solicitou o plano PRO."
+        },
+        "userName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Nome do utilizador."
+        },
+        "userEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "E-mail do utilizador."
+        },
+        "billingCycle": {
+          "type": "string",
+          "enum": ["monthly", "annual"],
+          "description": "Periodicidade escolhida."
+        },
+        "planLabel": {
+          "type": "string",
+          "enum": ["PRO Mensal", "PRO Anual"],
+          "description": "Etiqueta legível do plano."
+        },
+        "amountKz": {
+          "type": "number",
+          "description": "Valor em Kwanzas (1000 ou 10000)."
+        },
+        "durationDays": {
+          "type": "number",
+          "description": "Duração em dias (30 ou 365)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDENTE", "APROVADO", "REJEITADO"],
+          "description": "Estado de verificação do pedido."
+        },
+        "approvedBy": {
+          "type": "string",
+          "maxLength": 254,
+          "description": "E-mail do administrador que analisou o pedido."
+        },
+        "approvedByUid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "UID do administrador responsável."
+        },
+        "rejectionReason": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Motivo registado em caso de rejeição."
+        },
+        "activatedStartAt": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Data ISO de início da ativação PRO."
+        },
+        "activatedExpiresAt": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Data ISO de expiração registada na aprovação."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data de criação do pedido."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Última atualização do pedido."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userName",
+        "userEmail",
+        "billingCycle",
+        "planLabel",
+        "amountKz",
+        "durationDays",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "VideoExportLog": {
+      "title": "VideoExportLog",
+      "description": "Registo imutável de salvamento/exportação de vídeo ou legendas .SRT por utilizador.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Identificador único da exportação."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do utilizador que exportou o vídeo ou SRT."
+        },
+        "userEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "E-mail do utilizador."
+        },
+        "userPlan": {
+          "type": "string",
+          "enum": ["FREE", "PRO"],
+          "description": "Plano do utilizador no momento da exportação."
+        },
+        "videoKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "description": "Chave de identificação do vídeo exportado."
+        },
+        "videoFileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Nome do ficheiro de vídeo exportado."
+        },
+        "exportType": {
+          "type": "string",
+          "enum": ["video", "srt"],
+          "description": "Tipo de salvamento realizado."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data e hora da exportação."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userEmail",
+        "userPlan",
+        "videoKey",
+        "videoFileName",
+        "exportType",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -145,13 +702,49 @@
       "schema": {
         "$ref": "#/entities/UserProfile"
       },
-      "description": "Armazena dados de perfil privado de cada usuário autenticado, acessível apenas pelo próprio dono."
+      "description": "Perfis privados dos utilizadores e respetivos planos/assinaturas."
+    },
+    "/transcriptions/{transcriptionId}": {
+      "schema": {
+        "$ref": "#/entities/TranscriptionLog"
+      },
+      "description": "Registos de transcrições, minutos processados, uso por plano, erros e custo estimado da IA."
+    },
+    "/payments/{paymentId}": {
+      "schema": {
+        "$ref": "#/entities/PaymentRecord"
+      },
+      "description": "Pagamentos e assinaturas PRO geridos exclusivamente pela administradora."
+    },
+    "/audit_logs/{logId}": {
+      "schema": {
+        "$ref": "#/entities/AdminAuditLog"
+      },
+      "description": "Histórico imutável de auditoria das ações administrativas."
     },
     "/projects/{projectId}": {
       "schema": {
         "$ref": "#/entities/SubtitleProject"
       },
-      "description": "Armazena projetos de legendas, estilos e configurações de transição pertencentes a um usuário específico."
+      "description": "Projetos legados protegidos por UID do proprietário."
+    },
+    "/settings/{settingId}": {
+      "schema": {
+        "$ref": "#/entities/MulticaixaSettings"
+      },
+      "description": "Configuração Multicaixa Express & WhatsApp editável apenas pela administradora."
+    },
+    "/pro_orders/{orderId}": {
+      "schema": {
+        "$ref": "#/entities/ProOrder"
+      },
+      "description": "Pedidos de subscrição PRO via Multicaixa Express + WhatsApp."
+    },
+    "/video_exports/{exportId}": {
+      "schema": {
+        "$ref": "#/entities/VideoExportLog"
+      },
+      "description": "Registo imutável de exportações/salvamentos para controlo da cota do plano gratuito."
     }
   }
 }

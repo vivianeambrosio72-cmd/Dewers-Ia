@@ -92,7 +92,7 @@ export function AdminDiagnosticPanel({
                 Painel de Diagnóstico (Modo Desenvolvedor)
               </h2>
               <p className="text-[11px] text-slate-400">
-                Visível apenas para a conta admin via Google
+                Acesso exclusivo para dewersmatari@gmail.com
               </p>
             </div>
           </div>
@@ -111,7 +111,7 @@ export function AdminDiagnosticPanel({
           <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/25 px-3.5 py-2.5 flex items-center gap-2.5 text-emerald-200">
             <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
             <div className="min-w-0">
-              <span className="font-semibold">Admin autenticado via Google:</span>{' '}
+              <span className="font-semibold">Admin autenticado:</span>{' '}
               <span className="font-mono break-all">{adminEmail}</span>
             </div>
           </div>

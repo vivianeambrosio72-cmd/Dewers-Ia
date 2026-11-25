@@ -23,11 +23,11 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    function isAdminCaller() {
+    // Strict exclusive admin check: ONLY dewersmatari@gmail.com with verified email
+    function isAdmin() {
       return isSignedIn()
         && request.auth.token.email_verified == true
-        && request.auth.token.email == 'vivianeambrosio72@gmail.com'
-        && request.auth.token.firebase.sign_in_provider == 'google.com';
+        && request.auth.token.email == 'dewersmatari@gmail.com';
     }
 
     function isValidId(id) {
@@ -44,10 +44,17 @@ service cloud.firestore {
 
     // --- Validation Blueprints ---
     function isValidUserProfile(data, userId) {
-      return data.keys().hasAll(['uid', 'displayName', 'email', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'role', 'authProvider', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll([
+          'uid', 'displayName', 'email', 'role', 'authProvider',
+          'plan', 'subscriptionStatus', 'billingCycle',
+          'lastActiveAt', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'photoURL', 'role', 'authProvider',
+          'plan', 'subscriptionStatus', 'billingCycle', 'subscriptionExpiresAt',
+          'lastActiveAt', 'createdAt', 'updatedAt'
+        ])
         && data.uid is string
-        && data.uid == request.auth.uid
         && data.uid == userId
         && isValidId(data.uid)
         && data.displayName is string
@@ -56,12 +63,167 @@ service cloud.firestore {
         && data.email is string
         && data.email.size() >= 3
         && data.email.size() <= 254
-        && data.email == request.auth.token.email
         && (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 1000))
-        && (!('role' in data) || data.role == 'user' || (data.role == 'admin' && isAdminCaller()))
-        && (!('authProvider' in data) || (data.authProvider in ['google', 'email'] && (data.authProvider == 'google' || !('role' in data) || data.role == 'user')))
+        && (data.role == 'user' || (data.role == 'admin' && data.email == 'dewersmatari@gmail.com'))
+        && data.authProvider in ['google', 'email']
+        && data.plan in ['FREE', 'PRO']
+        && data.subscriptionStatus in ['free', 'active', 'pending', 'expired', 'cancelled']
+        && data.billingCycle in ['none', 'monthly', 'annual']
+        && (!('subscriptionExpiresAt' in data) || data.subscriptionExpiresAt == null || (data.subscriptionExpiresAt is string && data.subscriptionExpiresAt.size() <= 40))
+        && data.lastActiveAt is timestamp
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
+    }
+
+    function isValidTranscriptionLog(data, transcriptionId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'userEmail', 'userPlan', 'videoFileName',
+          'durationSeconds', 'minutesProcessed', 'language',
+          'segmentCount', 'wordCount', 'modelUsed',
+          'estimatedCostUsd', 'totalTokens', 'status', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'userId', 'userEmail', 'userPlan', 'videoFileName',
+          'durationSeconds', 'minutesProcessed', 'language',
+          'segmentCount', 'wordCount', 'modelUsed',
+          'estimatedCostUsd', 'totalTokens', 'status',
+          'errorCode', 'errorMessage', 'resolvedByAdmin', 'createdAt'
+        ])
+        && data.id is string && data.id == transcriptionId && isValidId(data.id)
+        && data.userId is string && isValidId(data.userId)
+        && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 254
+        && data.userPlan in ['FREE', 'PRO']
+        && data.videoFileName is string && data.videoFileName.size() >= 1 && data.videoFileName.size() <= 200
+        && data.durationSeconds is number && data.durationSeconds >= 0 && data.durationSeconds <= 14400
+        && data.minutesProcessed is number && data.minutesProcessed >= 0 && data.minutesProcessed <= 240
+        && data.language in ['pt-BR', 'en-US', 'es-ES', 'fr-FR']
+        && data.segmentCount is number && data.segmentCount >= 0 && data.segmentCount <= 5000
+        && data.wordCount is number && data.wordCount >= 0 && data.wordCount <= 50000
+        && data.modelUsed is string && data.modelUsed.size() >= 1 && data.modelUsed.size() <= 80
+        && data.estimatedCostUsd is number && data.estimatedCostUsd >= 0 && data.estimatedCostUsd <= 100
+        && data.totalTokens is number && data.totalTokens >= 0 && data.totalTokens <= 5000000
+        && data.status in ['completed', 'error']
+        && (!('errorCode' in data) || data.errorCode == null || (data.errorCode is string && data.errorCode.size() <= 80))
+        && (!('errorMessage' in data) || data.errorMessage == null || (data.errorMessage is string && data.errorMessage.size() <= 500))
+        && (!('resolvedByAdmin' in data) || data.resolvedByAdmin is bool)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidPaymentRecord(data, paymentId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'userEmail', 'plan', 'billingCycle',
+          'amountBrl', 'status', 'subscriptionStatus', 'paymentMethod',
+          'recordedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'userId', 'userEmail', 'plan', 'billingCycle',
+          'amountBrl', 'status', 'subscriptionStatus', 'paymentMethod',
+          'notes', 'expiresAt', 'recordedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == paymentId && isValidId(data.id)
+        && data.userId is string && isValidId(data.userId)
+        && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 254
+        && data.plan == 'PRO'
+        && data.billingCycle in ['monthly', 'annual']
+        && data.amountBrl is number && data.amountBrl >= 0 && data.amountBrl <= 100000
+        && data.status in ['confirmed', 'pending', 'refused']
+        && data.subscriptionStatus in ['active', 'pending', 'expired', 'cancelled']
+        && data.paymentMethod is string && data.paymentMethod.size() >= 1 && data.paymentMethod.size() <= 60
+        && (!('notes' in data) || data.notes == null || (data.notes is string && data.notes.size() <= 300))
+        && (!('expiresAt' in data) || data.expiresAt == null || (data.expiresAt is string && data.expiresAt.size() <= 40))
+        && data.recordedBy is string && data.recordedBy == 'dewersmatari@gmail.com'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMulticaixaSettings(data, settingId) {
+      return data.keys().hasAll([
+          'id', 'multicaixaNumber', 'updatedBy', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'multicaixaNumber', 'whatsappNumber', 'holderName', 'updatedBy', 'updatedAt'
+        ])
+        && data.id is string && data.id == settingId && isValidId(data.id)
+        && data.multicaixaNumber is string && data.multicaixaNumber.size() >= 1 && data.multicaixaNumber.size() <= 40
+        && (!('whatsappNumber' in data) || data.whatsappNumber == null || (data.whatsappNumber is string && data.whatsappNumber.size() <= 40))
+        && (!('holderName' in data) || data.holderName == null || (data.holderName is string && data.holderName.size() <= 120))
+        && data.updatedBy is string && data.updatedBy == 'dewersmatari@gmail.com'
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProOrder(data, orderId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'userName', 'userEmail', 'billingCycle',
+          'planLabel', 'amountKz', 'durationDays', 'status',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'userId', 'userName', 'userEmail', 'billingCycle',
+          'planLabel', 'amountKz', 'durationDays', 'status',
+          'approvedBy', 'approvedByUid', 'rejectionReason',
+          'activatedStartAt', 'activatedExpiresAt',
+          'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == orderId && isValidId(data.id)
+        && data.userId is string && isValidId(data.userId)
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 120
+        && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 254
+        && data.billingCycle in ['monthly', 'annual']
+        && data.planLabel in ['PRO Mensal', 'PRO Anual']
+        && data.amountKz is number && data.amountKz in [1000, 10000]
+        && data.durationDays is number && data.durationDays in [30, 365]
+        && data.status in ['PENDENTE', 'APROVADO', 'REJEITADO']
+        && (!('approvedBy' in data) || data.approvedBy == null || (data.approvedBy is string && data.approvedBy.size() <= 254))
+        && (!('approvedByUid' in data) || data.approvedByUid == null || (data.approvedByUid is string && data.approvedByUid.size() <= 128))
+        && (!('rejectionReason' in data) || data.rejectionReason == null || (data.rejectionReason is string && data.rejectionReason.size() <= 300))
+        && (!('activatedStartAt' in data) || data.activatedStartAt == null || (data.activatedStartAt is string && data.activatedStartAt.size() <= 40))
+        && (!('activatedExpiresAt' in data) || data.activatedExpiresAt == null || (data.activatedExpiresAt is string && data.activatedExpiresAt.size() <= 40))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVideoExportLog(data, exportId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'userEmail', 'userPlan',
+          'videoKey', 'videoFileName', 'exportType', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'userId', 'userEmail', 'userPlan',
+          'videoKey', 'videoFileName', 'exportType', 'createdAt'
+        ])
+        && data.id is string && data.id == exportId && isValidId(data.id)
+        && data.userId is string && isValidId(data.userId)
+        && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 254
+        && data.userPlan in ['FREE', 'PRO']
+        && data.videoKey is string && data.videoKey.size() >= 1 && data.videoKey.size() <= 240
+        && data.videoFileName is string && data.videoFileName.size() >= 1 && data.videoFileName.size() <= 200
+        && data.exportType in ['video', 'srt']
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAuditLog(data, logId) {
+      return data.keys().hasAll([
+          'id', 'adminUid', 'adminEmail', 'action', 'targetType', 'targetId', 'summary', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'adminUid', 'adminEmail', 'action', 'targetType', 'targetId',
+          'targetEmail', 'summary', 'previousValue', 'newValue', 'createdAt'
+        ])
+        && data.id is string && data.id == logId && isValidId(data.id)
+        && data.adminUid is string && data.adminUid == request.auth.uid && isValidId(data.adminUid)
+        && data.adminEmail is string && data.adminEmail == 'dewersmatari@gmail.com'
+        && data.action in [
+          'UPDATE_USER_PLAN', 'CREATE_PAYMENT', 'UPDATE_PAYMENT_STATUS',
+          'RESOLVE_TRANSCRIPTION_ERROR', 'REVOKE_SUBSCRIPTION', 'ADMIN_VERIFY',
+          'APPROVE_PRO_ORDER', 'REJECT_PRO_ORDER', 'UPDATE_PAYMENT_SETTINGS'
+        ]
+        && data.targetType in ['user', 'payment', 'transcription', 'pro_order', 'settings', 'system']
+        && data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128
+        && (!('targetEmail' in data) || data.targetEmail == null || (data.targetEmail is string && data.targetEmail.size() <= 254))
+        && data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 300
+        && (!('previousValue' in data) || data.previousValue == null || (data.previousValue is string && data.previousValue.size() <= 200))
+        && (!('newValue' in data) || data.newValue == null || (data.newValue is string && data.newValue.size() <= 200))
+        && data.createdAt is timestamp;
     }
 
     function isValidStyleConfig(cfg) {
@@ -133,31 +295,236 @@ service cloud.firestore {
 
     // --- Collection Rules ---
 
-    // Private User Profiles (PII Isolated)
+    // Private User Profiles & Plans (Anti-Privilege Escalation)
     match /users/{userId} {
-      allow get: if isValidId(userId) && isOwner(userId);
-      allow list: if false;
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+
+      // Users can create ONLY their own default FREE profile with role 'user' (admin gets 'admin' only when email matches)
       allow create: if isValidId(userId)
         && isVerified()
         && isOwner(userId)
         && isValidUserProfile(incoming(), userId)
+        && incoming().uid == request.auth.uid
+        && incoming().email == request.auth.token.email
+        && (incoming().role == 'user' || isAdmin())
+        && incoming().plan == 'FREE'
+        && incoming().subscriptionStatus == 'free'
+        && incoming().billingCycle == 'none'
+        && incoming().lastActiveAt == request.time
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
+
       allow update: if isValidId(userId)
         && isVerified()
-        && isOwner(userId)
         && isValidUserProfile(incoming(), userId)
         && incoming().uid == existing().uid
+        && incoming().email == existing().email
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'role', 'authProvider', 'updatedAt']);
-      allow delete: if isValidId(userId) && isOwner(userId);
+        && (
+          (
+            isAdmin()
+            && (incoming().role == existing().role || (incoming().role == 'admin' && incoming().email == 'dewersmatari@gmail.com'))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['plan', 'subscriptionStatus', 'billingCycle', 'subscriptionExpiresAt', 'updatedAt', 'role'])
+          )
+          || (
+            isOwner(userId)
+            && incoming().role == existing().role
+            && incoming().plan == existing().plan
+            && incoming().subscriptionStatus == existing().subscriptionStatus
+            && incoming().billingCycle == existing().billingCycle
+            && incoming().lastActiveAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'authProvider', 'lastActiveAt', 'updatedAt'])
+          )
+        );
+
+      allow delete: if false;
     }
 
-    // Saved Subtitle Projects
+    // Transcription Usage & AI Cost / Error Logs
+    match /transcriptions/{transcriptionId} {
+      allow get: if isValidId(transcriptionId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+
+      allow create: if isValidId(transcriptionId)
+        && isVerified()
+        && isValidTranscriptionLog(incoming(), transcriptionId)
+        && incoming().userId == request.auth.uid
+        && incoming().userEmail == request.auth.token.email
+        && incoming().createdAt == request.time
+        && (!('resolvedByAdmin' in incoming()) || incoming().resolvedByAdmin == false)
+        && (
+          (
+            exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && incoming().userPlan == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.plan
+          )
+          || (
+            !exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && incoming().userPlan == 'FREE'
+          )
+        );
+
+      allow update: if isValidId(transcriptionId)
+        && isAdmin()
+        && isValidTranscriptionLog(incoming(), transcriptionId)
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['resolvedByAdmin']);
+
+      allow delete: if isValidId(transcriptionId) && isAdmin();
+    }
+
+    // Immutable Video Export Logs (Enforces FREE 2-video save quota)
+    match /video_exports/{exportId} {
+      allow get: if isValidId(exportId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+
+      allow create: if isValidId(exportId)
+        && isVerified()
+        && isValidVideoExportLog(incoming(), exportId)
+        && incoming().userId == request.auth.uid
+        && incoming().userEmail == request.auth.token.email
+        && incoming().createdAt == request.time
+        && (
+          (
+            exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && incoming().userPlan == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.plan
+          )
+          || (
+            !exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && incoming().userPlan == 'FREE'
+          )
+        );
+
+      allow update, delete: if false;
+    }
+
+    // Payments & Subscriptions (Strictly Admin-Managed for writes)
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+
+      allow create: if isValidId(paymentId)
+        && isAdmin()
+        && isValidPaymentRecord(incoming(), paymentId)
+        && exists(/databases/$(database)/documents/users/$(incoming().userId))
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(paymentId)
+        && isAdmin()
+        && isValidPaymentRecord(incoming(), paymentId)
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'billingCycle', 'amountBrl', 'status', 'subscriptionStatus',
+          'paymentMethod', 'notes', 'expiresAt', 'recordedBy', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(paymentId) && isAdmin();
+    }
+
+    // Multicaixa Express & WhatsApp Settings (Admin write, Signed-in get)
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId) && settingId == 'multicaixa_express' && isSignedIn();
+      allow list: if isAdmin();
+
+      allow create, update: if isValidId(settingId)
+        && settingId == 'multicaixa_express'
+        && isAdmin()
+        && isValidMulticaixaSettings(incoming(), settingId)
+        && incoming().updatedBy == 'dewersmatari@gmail.com'
+        && incoming().updatedAt == request.time;
+
+      allow delete: if false;
+    }
+
+    // Manual PRO Orders (Multicaixa Express + WhatsApp)
+    match /pro_orders/{orderId} {
+      allow get: if isValidId(orderId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+
+      allow create: if isValidId(orderId)
+        && isVerified()
+        && isValidProOrder(incoming(), orderId)
+        && incoming().userId == request.auth.uid
+        && incoming().userEmail == request.auth.token.email
+        && incoming().status == 'PENDENTE'
+        && (!('approvedBy' in incoming()) || incoming().approvedBy == null)
+        && (!('approvedByUid' in incoming()) || incoming().approvedByUid == null)
+        && (!('rejectionReason' in incoming()) || incoming().rejectionReason == null)
+        && (!('activatedStartAt' in incoming()) || incoming().activatedStartAt == null)
+        && (!('activatedExpiresAt' in incoming()) || incoming().activatedExpiresAt == null)
+        && (
+          (incoming().billingCycle == 'monthly' && incoming().planLabel == 'PRO Mensal' && incoming().amountKz == 1000 && incoming().durationDays == 30)
+          || (incoming().billingCycle == 'annual' && incoming().planLabel == 'PRO Anual' && incoming().amountKz == 10000 && incoming().durationDays == 365)
+        )
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(orderId)
+        && isAdmin()
+        && isValidProOrder(incoming(), orderId)
+        && existing().status == 'PENDENTE'
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().userEmail == existing().userEmail
+        && incoming().billingCycle == existing().billingCycle
+        && incoming().planLabel == existing().planLabel
+        && incoming().amountKz == existing().amountKz
+        && incoming().durationDays == existing().durationDays
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().approvedBy == 'dewersmatari@gmail.com'
+        && incoming().approvedByUid == request.auth.uid
+        && (
+          (
+            incoming().status == 'APROVADO'
+            && incoming().activatedStartAt is string
+            && incoming().activatedStartAt.size() >= 10
+            && incoming().activatedExpiresAt is string
+            && incoming().activatedExpiresAt.size() >= 10
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'approvedBy', 'approvedByUid', 'activatedStartAt', 'activatedExpiresAt', 'updatedAt'
+            ])
+            && getAfter(/databases/$(database)/documents/users/$(existing().userId)).data.plan == 'PRO'
+            && getAfter(/databases/$(database)/documents/users/$(existing().userId)).data.subscriptionStatus == 'active'
+          )
+          || (
+            incoming().status == 'REJEITADO'
+            && incoming().rejectionReason is string
+            && incoming().rejectionReason.size() >= 3
+            && incoming().rejectionReason.size() <= 300
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'rejectionReason', 'approvedBy', 'approvedByUid', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // Immutable Admin Audit Logs (Append-only by Admin)
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+
+      allow create: if isValidId(logId)
+        && isAdmin()
+        && isValidAuditLog(incoming(), logId)
+        && incoming().createdAt == request.time;
+
+      allow update, delete: if false;
+    }
+
+    // Legacy Saved Subtitle Projects (Protected by Owner/Admin)
     match /projects/{projectId} {
-      allow get: if isValidId(projectId) && isSignedIn() && existing().ownerId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isValidId(projectId) && isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
       allow create: if isValidId(projectId)
         && isVerified()
         && isValidProject(incoming(), projectId)
@@ -165,20 +532,17 @@ service cloud.firestore {
         && incoming().updatedAt == request.time;
       allow update: if isValidId(projectId)
         && isVerified()
-        && existing().ownerId == request.auth.uid
+        && (existing().ownerId == request.auth.uid || isAdmin())
         && isValidProject(incoming(), projectId)
         && incoming().id == existing().id
         && incoming().ownerId == existing().ownerId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'videoFileName', 'duration', 'language', 'styleConfig', 'transitionConfig', 'transitionPoints', 'segments', 'wordCount', 'updatedAt'])
-          || incoming().diff(existing()).affectedKeys().hasOnly(['styleConfig', 'updatedAt'])
-          || incoming().diff(existing()).affectedKeys().hasOnly(['transitionConfig', 'transitionPoints', 'updatedAt'])
-          || incoming().diff(existing()).affectedKeys().hasOnly(['segments', 'wordCount', 'updatedAt'])
-          || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'updatedAt'])
+          isAdmin()
+          || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'videoFileName', 'duration', 'language', 'styleConfig', 'transitionConfig', 'transitionPoints', 'segments', 'wordCount', 'updatedAt'])
         );
-      allow delete: if isValidId(projectId) && isVerified() && existing().ownerId == request.auth.uid;
+      allow delete: if isValidId(projectId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
     }
   }
 }

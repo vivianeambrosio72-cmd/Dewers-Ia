@@ -4,6 +4,8 @@ import {
   CheckCircle2,
   Download,
   FileText,
+  Lock,
+  Sparkles,
   X,
 } from 'lucide-react';
 import type { StyleConfig, SubtitleSegment } from '../types';
@@ -21,6 +23,13 @@ interface ExportStageProps {
   onCancelExport: () => void;
   onDownloadSrt: () => void;
   onBackToStep2: () => void;
+  freePlanInfo?: {
+    isFree: boolean;
+    savedUsed: number;
+    limit: number;
+    saveBlocked: boolean;
+  };
+  onOpenProUpgrade?: () => void;
 }
 
 export function ExportStage({
@@ -35,8 +44,11 @@ export function ExportStage({
   onCancelExport,
   onDownloadSrt,
   onBackToStep2,
+  freePlanInfo,
+  onOpenProUpgrade,
 }: ExportStageProps) {
   const totalWords = segments.reduce((acc, s) => acc + s.words.length, 0);
+  const saveBlocked = Boolean(freePlanInfo?.saveBlocked);
 
   return (
     <div className="max-w-2xl mx-auto py-10 px-4 sm:px-6 space-y-6">
@@ -105,25 +117,69 @@ export function ExportStage({
           </div>
         )}
 
+        {/* Free Plan Quota Gate */}
+        {freePlanInfo?.isFree && (
+          <div
+            className={`p-4 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs ${
+              saveBlocked
+                ? 'bg-rose-500/10 border-rose-500/35 text-rose-200'
+                : 'bg-[#090B10] border-white/10 text-slate-300'
+            }`}
+          >
+            <div className="flex items-start gap-2.5 min-w-0 flex-1">
+              {saveBlocked && (
+                <Lock className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              )}
+              <span>
+                {saveBlocked
+                  ? `Limite do Plano Grátis atingido (${freePlanInfo.limit} vídeos). O salvamento está bloqueado. Ative o plano PRO para baixar este vídeo ou arquivo .SRT.`
+                  : `Plano Grátis: ${Math.min(freePlanInfo.savedUsed, freePlanInfo.limit)} de ${freePlanInfo.limit} vídeos salvos utilizados.`}
+              </span>
+            </div>
+            {onOpenProUpgrade && (
+              <button
+                type="button"
+                onClick={onOpenProUpgrade}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-400 text-slate-950 font-bold hover:bg-amber-300 transition-colors whitespace-nowrap shrink-0"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Assinar PRO
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Primary Export Actions */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
           <button
             type="button"
-            disabled={!hasVideo || segments.length === 0 || isExporting}
+            disabled={!hasVideo || segments.length === 0 || isExporting || saveBlocked}
             onClick={onDownloadVideo}
             className="flex-1 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg bg-amber-400 text-slate-950 text-sm font-semibold hover:bg-amber-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
           >
-            <Download className="w-4 h-4" />
-            {isExporting ? 'Renderizando vídeo...' : 'Baixar vídeo final'}
+            {saveBlocked ? (
+              <Lock className="w-4 h-4" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            {saveBlocked
+              ? 'Salvamento bloqueado (Plano Grátis)'
+              : isExporting
+                ? 'Renderizando vídeo...'
+                : 'Baixar vídeo final'}
           </button>
 
           <button
             type="button"
-            disabled={segments.length === 0 || isExporting}
+            disabled={segments.length === 0 || isExporting || saveBlocked}
             onClick={onDownloadSrt}
             className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg bg-[#181C27] border border-white/10 text-sm font-semibold text-slate-100 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
           >
-            <FileText className="w-4 h-4 text-slate-300" />
+            {saveBlocked ? (
+              <Lock className="w-4 h-4 text-slate-400" />
+            ) : (
+              <FileText className="w-4 h-4 text-slate-300" />
+            )}
             Baixar arquivo .SRT
           </button>
         </div>
