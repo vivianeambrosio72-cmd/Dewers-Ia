@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   ArrowLeft,
+  AudioLines,
   CheckCircle2,
   Download,
   FileText,
@@ -8,8 +9,22 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import type { StyleConfig, SubtitleSegment } from '../types';
+import type {
+  NoiseReductionConfig,
+  NoiseReductionLevel,
+  StyleConfig,
+  SubtitleSegment,
+} from '../types';
 import { formatTimeDisplay } from '../utils/subtitles';
+
+const EXPORT_NOISE_LEVELS: Array<{
+  value: NoiseReductionLevel;
+  label: string;
+}> = [
+  { value: 'light', label: 'Suave' },
+  { value: 'medium', label: 'Médio' },
+  { value: 'strong', label: 'Forte' },
+];
 
 interface ExportStageProps {
   projectTitle: string;
@@ -30,6 +45,8 @@ interface ExportStageProps {
     saveBlocked: boolean;
   };
   onOpenProUpgrade?: () => void;
+  noiseReduction?: NoiseReductionConfig;
+  onNoiseReductionChange?: (next: NoiseReductionConfig) => void;
 }
 
 export function ExportStage({
@@ -46,6 +63,8 @@ export function ExportStage({
   onBackToStep2,
   freePlanInfo,
   onOpenProUpgrade,
+  noiseReduction = { enabled: false, level: 'medium' },
+  onNoiseReductionChange,
 }: ExportStageProps) {
   const totalWords = segments.reduce((acc, s) => acc + s.words.length, 0);
   const saveBlocked = Boolean(freePlanInfo?.saveBlocked);
@@ -86,6 +105,85 @@ export function ExportStage({
             </div>
           </div>
         </div>
+
+        {/* Audio Noise Reduction Option */}
+        {onNoiseReductionChange && (
+          <div className="p-3.5 rounded-xl bg-[#090B10] border border-white/10 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div
+                className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 ${
+                  noiseReduction.enabled
+                    ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'
+                    : 'bg-[#181C27] border-white/10 text-slate-400'
+                }`}
+              >
+                <AudioLines className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-slate-100">
+                  Reduzir ruído no vídeo final
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Aplica filtro de voz limpa durante a renderização
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {noiseReduction.enabled && (
+                <div
+                  role="group"
+                  aria-label="Nível de redução de ruído"
+                  className="inline-flex items-center rounded-lg bg-[#11141D] border border-white/10 p-0.5"
+                >
+                  {EXPORT_NOISE_LEVELS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      disabled={isExporting}
+                      onClick={() =>
+                        onNoiseReductionChange({
+                          ...noiseReduction,
+                          level: opt.value,
+                        })
+                      }
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors disabled:opacity-50 ${
+                        noiseReduction.level === opt.value
+                          ? 'bg-amber-400 text-slate-950'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                type="button"
+                role="switch"
+                aria-checked={noiseReduction.enabled}
+                disabled={isExporting}
+                onClick={() =>
+                  onNoiseReductionChange({
+                    ...noiseReduction,
+                    enabled: !noiseReduction.enabled,
+                  })
+                }
+                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors disabled:opacity-50 ${
+                  noiseReduction.enabled
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/25'
+                    : 'bg-[#181C27] border-white/10 text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    noiseReduction.enabled ? 'bg-emerald-400' : 'bg-slate-500'
+                  }`}
+                />
+                {noiseReduction.enabled ? 'Ativado' : 'Desativado'}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Render Progress */}
         {isExporting && (

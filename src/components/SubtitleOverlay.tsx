@@ -63,22 +63,34 @@ export function SubtitleOverlay({
 
   useLayoutEffect(() => {
     if (preset !== 'caixa_destaque') {
-      setPillRect(null);
+      setPillRect((prev) => (prev === null ? prev : null));
       return;
     }
     const idx = chunk.activeWordIndex;
     const containerEl = containerRef.current;
     const wordEl = idx >= 0 ? wordRefs.current[idx] : null;
     if (!containerEl || !wordEl) {
-      setPillRect(null);
+      setPillRect((prev) => (prev === null ? prev : null));
       return;
     }
-    setPillRect({
-      left: wordEl.offsetLeft - 8,
-      top: wordEl.offsetTop - 3,
-      width: wordEl.offsetWidth + 16,
-      height: wordEl.offsetHeight + 6,
-    });
+    const nextLeft = wordEl.offsetLeft - 8;
+    const nextTop = wordEl.offsetTop - 3;
+    const nextWidth = wordEl.offsetWidth + 16;
+    const nextHeight = wordEl.offsetHeight + 6;
+    setPillRect((prev) =>
+      prev &&
+      prev.left === nextLeft &&
+      prev.top === nextTop &&
+      prev.width === nextWidth &&
+      prev.height === nextHeight
+        ? prev
+        : {
+            left: nextLeft,
+            top: nextTop,
+            width: nextWidth,
+            height: nextHeight,
+          },
+    );
   }, [preset, chunk.chunkId, chunk.activeWordIndex, fontSizePx, styleConfig.fontFamily]);
 
   // Preset-specific typography rules

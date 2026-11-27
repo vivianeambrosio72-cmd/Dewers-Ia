@@ -89,13 +89,18 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
       if (!isTransient || attempt === maxAttempts) {
         throw err;
       }
-      await sleep(1000 * Math.pow(2, attempt - 1));
+      const jitterMs = Math.floor(Math.random() * 250);
+      await sleep(500 * Math.pow(2, attempt - 1) + jitterMs);
     }
   }
   throw lastError;
 }
 
 interface RawWord {
+  t?: string;
+  s?: number;
+  e?: number;
+  c?: number;
   text?: string;
   start?: number;
   end?: number;
@@ -103,6 +108,7 @@ interface RawWord {
 }
 
 interface RawSegment {
+  w?: RawWord[];
   text?: string;
   start?: number;
   end?: number;
@@ -113,6 +119,26 @@ interface GeminiTranscriptionPayload {
   hasSpeech?: boolean;
   detectedLanguage?: string;
   segments?: RawSegment[];
+}
+
+const DEFAULT_CANDIDATE_MODELS = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const;
+const unavailableModels = new Set<string>();
+let cachedAiClient: { apiKey: string; client: GoogleGenAI } | null = null;
+
+function getSharedGeminiClient(apiKey: string): GoogleGenAI {
+  if (cachedAiClient && cachedAiClient.apiKey === apiKey) {
+    return cachedAiClient.client;
+  }
+  const client = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+  cachedAiClient = { apiKey, client };
+  return client;
 }
 
 function sanitizeTranscription(payload: GeminiTranscriptionPayload) {
@@ -136,7 +162,11 @@ function sanitizeTranscription(payload: GeminiTranscriptionPayload) {
 
   for (let sIdx = 0; sIdx < rawSegments.length; sIdx++) {
     const seg = rawSegments[sIdx];
-    const rawWords = Array.isArray(seg.words) ? seg.words : [];
+    const rawWords = Array.isArray(seg.w)
+      ? seg.w
+      : Array.isArray(seg.words)
+        ? seg.words
+        : [];
 
     const words: Array<{
       id: string;
@@ -148,16 +178,19 @@ function sanitizeTranscription(payload: GeminiTranscriptionPayload) {
     }> = [];
     for (let wIdx = 0; wIdx < rawWords.length; wIdx++) {
       const w = rawWords[wIdx];
-      const text = String(w.text ?? '').trim();
+      const text = String(w.t ?? w.text ?? '').trim();
       if (!text) continue;
-      let start = Number.isFinite(w.start) ? Math.max(0, Number(w.start)) : globalCursor;
-      let end = Number.isFinite(w.end) ? Math.max(start + 0.05, Number(w.end)) : start + 0.25;
+      const rawStart = w.s ?? w.start;
+      const rawEnd = w.e ?? w.end;
+      const rawConfVal = w.c ?? w.confidence;
+      let start = Number.isFinite(rawStart) ? Math.max(0, Number(rawStart)) : globalCursor;
+      let end = Number.isFinite(rawEnd) ? Math.max(start + 0.05, Number(rawEnd)) : start + 0.25;
       if (start < globalCursor) {
         start = globalCursor;
         if (end <= start) end = start + 0.12;
       }
       globalCursor = end;
-      const rawConf = Number.isFinite(w.confidence) ? Number(w.confidence) : 0.95;
+      const rawConf = Number.isFinite(rawConfVal) ? Number(rawConfVal) : 0.95;
       const confidence = Math.min(1, Math.max(0, Number(rawConf.toFixed(2))));
       words.push({
         id: `w_${sIdx}_${wIdx}_${Math.random().toString(36).slice(2, 6)}`,
@@ -258,32 +291,63 @@ async function startServer() {
 
   const INLINE_MAX_BYTES = 18 * 1024 * 1024; // 18 MB inline fast path
 
-  async function processTranscriptionAndRespond(params: {
+  type TranscriptionJobRecord =
+    | {
+        status: 'processing';
+        stage: string;
+        updatedAt: number;
+      }
+    | {
+        status: 'completed';
+        body: Record<string, unknown>;
+        updatedAt: number;
+      }
+    | {
+        status: 'error';
+        httpStatus: number;
+        body: Record<string, unknown>;
+        updatedAt: number;
+      };
+
+  const transcriptionJobs = new Map<string, TranscriptionJobRecord>();
+
+  const pruneExpiredJobs = () => {
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    for (const [id, job] of transcriptionJobs.entries()) {
+      if (job.updatedAt < cutoff) {
+        transcriptionJobs.delete(id);
+      }
+    }
+  };
+
+  async function runTranscriptionPipeline(params: {
     filePath: string;
     originalName: string;
     rawMimeType?: string;
     languageInput: unknown;
     customDictionaryInput: unknown;
-    res: Response;
-  }) {
+    onStage?: (stage: string) => void;
+  }): Promise<{ httpStatus: number; body: Record<string, unknown> }> {
     const {
       filePath,
       originalName,
       rawMimeType,
       languageInput,
       customDictionaryInput,
-      res,
+      onStage,
     } = params;
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       await fs.promises.unlink(filePath).catch(() => {});
-      res.status(500).json({
-        error:
-          'Chave da API Gemini não encontrada no servidor. Configure a variável GEMINI_API_KEY nas configurações do projeto.',
-        code: 'API_KEY_ERROR',
-      });
-      return;
+      return {
+        httpStatus: 500,
+        body: {
+          error:
+            'Chave da API Gemini não encontrada no servidor. Configure a variável GEMINI_API_KEY nas configurações do projeto.',
+          code: 'API_KEY_ERROR',
+        },
+      };
     }
 
     const language =
@@ -296,14 +360,7 @@ async function startServer() {
         ? customDictionaryInput.trim().slice(0, 2000)
         : '';
 
-    const ai = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
+    const ai = getSharedGeminiClient(apiKey);
 
     let uploadedRemoteName: string | undefined;
 
@@ -315,8 +372,10 @@ async function startServer() {
         | { inlineData: { mimeType: string; data: string } }
         | { fileData: { fileUri?: string; mimeType: string } };
 
+      let isLargeRemoteUpload = false;
       if (fileStat.size <= INLINE_MAX_BYTES) {
         // Fast inline path: avoids ai.files.upload + PROCESSING polling latency
+        onStage?.('Enviando áudio para a IA...');
         const rawBytes = await fs.promises.readFile(filePath);
         mediaPart = {
           inlineData: {
@@ -325,6 +384,8 @@ async function startServer() {
           },
         };
       } else {
+        isLargeRemoteUpload = true;
+        onStage?.('Enviando vídeo para processamento da IA...');
         const uploadResult = await ai.files.upload({
           file: filePath,
           config: {
@@ -338,11 +399,12 @@ async function startServer() {
           throw new Error('Falha ao registrar arquivo na API Gemini.');
         }
 
-        // Wait for file processing to become ACTIVE (max ~45s)
+        // Wait for file processing to become ACTIVE (max ~90s for larger videos)
+        onStage?.('Preparando vídeo na IA...');
         let fileState = uploadResult.state;
         let attempts = 0;
-        while (fileState === 'PROCESSING' && attempts < 30) {
-          await sleep(1500);
+        while (fileState === 'PROCESSING' && attempts < 45) {
+          await sleep(2000);
           const status = await ai.files.get({ name: uploadedRemoteName });
           fileState = status.state;
           attempts++;
@@ -363,102 +425,67 @@ async function startServer() {
       }
 
       const promptLines = [
-        `Transcreva toda a fala deste arquivo com precisão de nível de palavra utilizando obrigatoriamente o idioma com código ${language} (${languageLabel}).`,
-        'Regras obrigatórias:',
-        `1. Código do idioma alvo para transcrição: ${language}. Se a fala estiver em outro idioma, transcreva/adapte fielmente para ${languageLabel} (${language}), mantendo o sincronismo exato.`,
-        '2. Se o áudio NÃO tiver voz humana falando palavras identificáveis (mudo, silêncio, apenas música instrumental, ruído ou tons contínuos), defina obrigatoriamente hasSpeech como false e retorne segments como []. Nunca invente falas inexistentes.',
-        '3. Caso haja fala, defina hasSpeech como true e agrupe as falas em segmentos curtos e dinâmicos (2 a 4 palavras por bloco, ideal para legendas de vídeos curtos estilo Reels/TikTok).',
-        '4. Para CADA palavra dentro de words, forneça text, start (em segundos decimais, ex: 1.42), end (em segundos decimais, ex: 1.78) e confidence (número de 0.0 a 1.0).',
-        '5. Seja honesto na pontuação de confidence: atribua valor menor que 0.78 (ex: 0.55 a 0.75) sempre que houver dúvida ortográfica, nome próprio incomum, fala muito rápida, música alta ao fundo ou áudio pouco claro, para sinalizar ao usuário que aquela palavra merece revisão.',
-        '6. Mantenha pontuação natural e ortografia correta no idioma solicitado.',
+        `Transcreva toda a fala para ${language} (${languageLabel}) com timestamps por palavra.`,
+        'Regras:',
+        `1. Idioma alvo obrigatório: ${language} (${languageLabel}).`,
+        '2. Sem fala humana (silêncio, só música ou ruído): hasSpeech=false e segments=[]. Nunca invente fala.',
+        '3. Com fala: hasSpeech=true; agrupe em blocos curtos de 2 a 4 palavras em w.',
+        '4. Em cada item de w: t (palavra), s (início em segundos), e (fim em segundos), c (confiança 0.0-1.0; <0.78 se houver dúvida).',
       ];
 
       if (customDictionary) {
-        promptLines.push(
-          `7. Dicionário personalizado ("Palavras importantes" do usuário): utilize EXATAMENTE estas grafias, nomes próprios, termos técnicos ou expressões sempre que identificar pronúncia compatível no áudio: ${customDictionary}`,
-        );
+        promptLines.push(`5. Grafias obrigatórias: ${customDictionary}`);
       }
 
       const prompt = promptLines.join('\n');
       const startMs = Date.now();
       console.log(`[DEWES Transcribe] Enviando ${mimeType} (${fileStat.size} bytes) para Gemini...`);
 
-      const systemInstruction = `Você é um engenheiro especialista em legendagem automática de vídeos curtos. Transcreva exclusivamente usando o código de idioma ${language} (${languageLabel}) e retorne JSON válido seguindo o schema, com tempos exatos em segundos e confiança calibrada para cada palavra falada.`;
+      const systemInstruction = `Especialista em legendagem rápida de vídeos curtos. Transcreva em ${language} (${languageLabel}) retornando JSON compacto conforme o schema.`;
       const responseSchema = {
         type: Type.OBJECT,
         properties: {
-          hasSpeech: {
-            type: Type.BOOLEAN,
-            description:
-              'true se houver fala humana audível no vídeo, false se estiver mudo ou sem fala.',
-          },
-          detectedLanguage: {
-            type: Type.STRING,
-            description: 'Código ou nome do idioma detectado na fala.',
-          },
+          hasSpeech: { type: Type.BOOLEAN },
+          detectedLanguage: { type: Type.STRING },
           segments: {
             type: Type.ARRAY,
-            description:
-              'Lista ordenada cronologicamente de blocos curtos de legenda.',
             items: {
               type: Type.OBJECT,
               properties: {
-                text: {
-                  type: Type.STRING,
-                  description:
-                    'Texto completo do bloco de legenda (2 a 6 palavras).',
-                },
-                start: {
-                  type: Type.NUMBER,
-                  description: 'Tempo de início do bloco em segundos.',
-                },
-                end: {
-                  type: Type.NUMBER,
-                  description: 'Tempo de término do bloco em segundos.',
-                },
-                words: {
+                w: {
                   type: Type.ARRAY,
+                  description: '2 a 4 palavras por bloco.',
                   items: {
                     type: Type.OBJECT,
                     properties: {
-                      text: {
-                        type: Type.STRING,
-                        description:
-                          'Palavra individual (incluindo pontuação anexa, se houver).',
-                      },
-                      start: {
-                        type: Type.NUMBER,
-                        description: 'Início exato da palavra em segundos.',
-                      },
-                      end: {
-                        type: Type.NUMBER,
-                        description:
-                          'Término exato da palavra em segundos.',
-                      },
-                      confidence: {
-                        type: Type.NUMBER,
-                        description:
-                          'Confiança de 0.0 a 1.0 na transcrição exata desta palavra (< 0.78 quando incerta).',
-                      },
+                      t: { type: Type.STRING, description: 'Palavra' },
+                      s: { type: Type.NUMBER, description: 'Início (s)' },
+                      e: { type: Type.NUMBER, description: 'Fim (s)' },
+                      c: { type: Type.NUMBER, description: 'Confiança 0-1' },
                     },
-                    required: ['text', 'start', 'end', 'confidence'],
+                    required: ['t', 's', 'e', 'c'],
                   },
                 },
               },
-              required: ['text', 'start', 'end', 'words'],
+              required: ['w'],
             },
           },
         },
         required: ['hasSpeech', 'detectedLanguage', 'segments'],
       };
 
-      const candidateModels = mimeType.startsWith('audio/')
-        ? ['gemini-3.5-transcribe', 'gemini-3.1-flash-lite', 'gemini-4-hydrogen']
-        : ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
+      const activeCandidates = DEFAULT_CANDIDATE_MODELS.filter(
+        (m) => !unavailableModels.has(m),
+      );
+      const candidateModels =
+        activeCandidates.length > 0 ? activeCandidates : [...DEFAULT_CANDIDATE_MODELS];
 
       let response: Awaited<ReturnType<typeof ai.models.generateContent>> | undefined;
       let lastModelError: unknown;
       let usedModelName = candidateModels[candidateModels.length - 1];
+
+      onStage?.('Transcrevendo áudio com Gemini...');
+      const requestTimeoutMs = isLargeRemoteUpload ? 90000 : 35000;
 
       for (const modelName of candidateModels) {
         try {
@@ -472,7 +499,7 @@ async function startServer() {
                   parts: [mediaPart, { text: prompt }],
                 },
                 config: {
-                  abortSignal: AbortSignal.timeout(30000),
+                  abortSignal: AbortSignal.timeout(requestTimeoutMs),
                   ...(isFlashLite
                     ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } }
                     : isHydrogen
@@ -496,6 +523,9 @@ async function startServer() {
           console.warn(
             `[DEWES Transcribe] Modelo ${modelName} falhou (${errMsg}); tentando próximo se disponível.`,
           );
+          if (errMsg.includes('404') || errMsg.includes('NOT_FOUND')) {
+            unavailableModels.add(modelName);
+          }
           if (
             errMsg.includes('PERMISSION_DENIED') ||
             errMsg.includes('API_KEY_INVALID') ||
@@ -525,22 +555,26 @@ async function startServer() {
       }
 
       if (parsed.hasSpeech === false) {
-        res.status(422).json({
-          error:
-            'Nenhuma fala audível foi detectada neste vídeo. Verifique se o áudio não está mudo.',
-          code: 'NO_AUDIO',
-        });
-        return;
+        return {
+          httpStatus: 422,
+          body: {
+            error:
+              'Nenhuma fala audível foi detectada neste vídeo. Verifique se o áudio não está mudo.',
+            code: 'NO_AUDIO',
+          },
+        };
       }
 
       const segments = sanitizeTranscription(parsed);
       if (segments.length === 0) {
-        res.status(422).json({
-          error:
-            'Não foi possível extrair falas deste vídeo. Confirme se há voz audível na gravação.',
-          code: 'NO_AUDIO',
-        });
-        return;
+        return {
+          httpStatus: 422,
+          body: {
+            error:
+              'Não foi possível extrair falas deste vídeo. Confirme se há voz audível na gravação.',
+            code: 'NO_AUDIO',
+          },
+        };
       }
 
       const promptTokens = Number(response.usageMetadata?.promptTokenCount || 0);
@@ -554,18 +588,21 @@ async function startServer() {
         ((promptTokens * 0.15 + candidatesTokens * 0.6) / 1_000_000).toFixed(6),
       );
 
-      res.json({
-        hasSpeech: true,
-        detectedLanguage: parsed.detectedLanguage || language,
-        segments,
-        usage: {
-          modelUsed: usedModelName,
-          promptTokens,
-          candidatesTokens,
-          totalTokens,
-          estimatedCostUsd,
+      return {
+        httpStatus: 200,
+        body: {
+          hasSpeech: true,
+          detectedLanguage: parsed.detectedLanguage || language,
+          segments,
+          usage: {
+            modelUsed: usedModelName,
+            promptTokens,
+            candidatesTokens,
+            totalTokens,
+            estimatedCostUsd,
+          },
         },
-      });
+      };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       const errName = error instanceof Error ? error.name : '';
@@ -577,12 +614,14 @@ async function startServer() {
         msg.includes('aborted') ||
         msg.includes('timeout')
       ) {
-        res.status(504).json({
-          error:
-            'A transcrição demorou mais que o esperado na IA. Tente novamente em instantes ou envie um vídeo mais curto.',
-          code: 'GEMINI_TIMEOUT',
-        });
-        return;
+        return {
+          httpStatus: 504,
+          body: {
+            error:
+              'A transcrição demorou mais que o esperado na IA. Tente novamente em instantes ou envie um vídeo mais curto.',
+            code: 'GEMINI_TIMEOUT',
+          },
+        };
       }
 
       if (
@@ -590,32 +629,54 @@ async function startServer() {
         msg.includes('API_KEY_INVALID') ||
         msg.includes('403')
       ) {
-        res.status(403).json({
-          error:
-            'Chave da API Gemini inválida ou sem permissão. Verifique a chave em Configurações > Secrets.',
-          code: 'API_KEY_ERROR',
-        });
-        return;
+        return {
+          httpStatus: 403,
+          body: {
+            error:
+              'Chave da API Gemini inválida ou sem permissão. Verifique a chave em Configurações > Secrets.',
+            code: 'API_KEY_ERROR',
+          },
+        };
       }
 
       if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
-        res.status(429).json({
-          error:
-            'Cota da API Gemini temporariamente excedida. Aguarde alguns segundos e tente novamente.',
-          code: 'QUOTA_EXCEEDED',
-        });
-        return;
+        return {
+          httpStatus: 429,
+          body: {
+            error:
+              'Cota da API Gemini temporariamente excedida. Aguarde alguns segundos e tente novamente.',
+            code: 'QUOTA_EXCEEDED',
+          },
+        };
       }
 
-      res.status(502).json({
-        error: `Falha ao processar o vídeo com a IA: ${msg}`,
-        code: 'API_ERROR',
-      });
+      return {
+        httpStatus: 502,
+        body: {
+          error: `Falha ao processar o vídeo com a IA: ${msg}`,
+          code: 'API_ERROR',
+        },
+      };
     } finally {
       await fs.promises.unlink(filePath).catch(() => {});
       if (uploadedRemoteName) {
         await ai.files.delete({ name: uploadedRemoteName }).catch(() => {});
       }
+    }
+  }
+
+  async function processTranscriptionAndRespond(params: {
+    filePath: string;
+    originalName: string;
+    rawMimeType?: string;
+    languageInput: unknown;
+    customDictionaryInput: unknown;
+    res: Response;
+  }) {
+    const { res, ...pipelineParams } = params;
+    const result = await runTranscriptionPipeline(pipelineParams);
+    if (!res.headersSent) {
+      res.status(result.httpStatus).json(result.body);
     }
   }
 
@@ -682,7 +743,7 @@ async function startServer() {
       !uploadId ||
       !Number.isInteger(totalChunks) ||
       totalChunks < 1 ||
-      totalChunks > 64
+      totalChunks > 256
     ) {
       res.status(400).json({
         error: 'Parâmetros de montagem do vídeo inválidos.',
@@ -726,13 +787,66 @@ async function startServer() {
       });
       await fs.promises.rm(chunkDir, { recursive: true, force: true }).catch(() => {});
 
-      await processTranscriptionAndRespond({
+      pruneExpiredJobs();
+      const jobId = `job_${uploadId}`;
+      transcriptionJobs.set(jobId, {
+        status: 'processing',
+        stage: 'Preparando vídeo para a IA...',
+        updatedAt: Date.now(),
+      });
+
+      const languageInput = req.body?.language;
+      const customDictionaryInput = req.body?.customDictionary;
+
+      void runTranscriptionPipeline({
         filePath: assembledPath,
         originalName: fileName,
         rawMimeType: mimeType,
-        languageInput: req.body?.language,
-        customDictionaryInput: req.body?.customDictionary,
-        res,
+        languageInput,
+        customDictionaryInput,
+        onStage: (stage) => {
+          const existing = transcriptionJobs.get(jobId);
+          if (existing?.status === 'processing') {
+            transcriptionJobs.set(jobId, {
+              status: 'processing',
+              stage,
+              updatedAt: Date.now(),
+            });
+          }
+        },
+      })
+        .then((result) => {
+          if (result.httpStatus >= 200 && result.httpStatus < 300) {
+            transcriptionJobs.set(jobId, {
+              status: 'completed',
+              body: result.body,
+              updatedAt: Date.now(),
+            });
+          } else {
+            transcriptionJobs.set(jobId, {
+              status: 'error',
+              httpStatus: result.httpStatus,
+              body: result.body,
+              updatedAt: Date.now(),
+            });
+          }
+        })
+        .catch((err) => {
+          transcriptionJobs.set(jobId, {
+            status: 'error',
+            httpStatus: 500,
+            body: {
+              error: `Falha ao processar vídeo: ${err instanceof Error ? err.message : String(err)}`,
+              code: 'JOB_EXECUTION_ERROR',
+            },
+            updatedAt: Date.now(),
+          });
+        });
+
+      res.status(202).json({
+        status: 'processing',
+        jobId,
+        stage: 'Preparando vídeo para a IA...',
       });
     } catch (err) {
       await fs.promises.rm(chunkDir, { recursive: true, force: true }).catch(() => {});
@@ -744,6 +858,41 @@ async function startServer() {
         });
       }
     }
+  });
+
+  app.get('/api/transcribe/status/:jobId', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const jobId = String(req.params?.jobId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const job = transcriptionJobs.get(jobId);
+    if (!job) {
+      res.status(404).json({
+        error: 'Tarefa de transcrição não encontrada ou expirada. Tente novamente.',
+        code: 'JOB_NOT_FOUND',
+      });
+      return;
+    }
+
+    if (job.status === 'processing') {
+      res.json({
+        status: 'processing',
+        stage: job.stage,
+      });
+      return;
+    }
+
+    transcriptionJobs.delete(jobId);
+    if (job.status === 'completed') {
+      res.json({
+        status: 'completed',
+        ...job.body,
+      });
+      return;
+    }
+
+    res.status(job.httpStatus).json({
+      status: 'error',
+      ...job.body,
+    });
   });
 
   app.post(

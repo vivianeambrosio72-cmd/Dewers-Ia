@@ -79,13 +79,18 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 2): Promise<T> {
       if (!isTransient || attempt === maxAttempts) {
         throw err;
       }
-      await sleep(800 * Math.pow(2, attempt - 1));
+      const jitterMs = Math.floor(Math.random() * 250);
+      await sleep(500 * Math.pow(2, attempt - 1) + jitterMs);
     }
   }
   throw lastError;
 }
 
 interface RawWord {
+  t?: string;
+  s?: number;
+  e?: number;
+  c?: number;
   text?: string;
   start?: number;
   end?: number;
@@ -93,6 +98,7 @@ interface RawWord {
 }
 
 interface RawSegment {
+  w?: RawWord[];
   text?: string;
   start?: number;
   end?: number;
@@ -103,6 +109,26 @@ interface GeminiTranscriptionPayload {
   hasSpeech?: boolean;
   detectedLanguage?: string;
   segments?: RawSegment[];
+}
+
+const DEFAULT_CANDIDATE_MODELS = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const;
+const unavailableModels = new Set<string>();
+let cachedAiClient: { apiKey: string; client: GoogleGenAI } | null = null;
+
+function getSharedGeminiClient(apiKey: string): GoogleGenAI {
+  if (cachedAiClient && cachedAiClient.apiKey === apiKey) {
+    return cachedAiClient.client;
+  }
+  const client = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+  cachedAiClient = { apiKey, client };
+  return client;
 }
 
 function sanitizeTranscription(payload: GeminiTranscriptionPayload) {
@@ -126,7 +152,11 @@ function sanitizeTranscription(payload: GeminiTranscriptionPayload) {
 
   for (let sIdx = 0; sIdx < rawSegments.length; sIdx++) {
     const seg = rawSegments[sIdx];
-    const rawWords = Array.isArray(seg.words) ? seg.words : [];
+    const rawWords = Array.isArray(seg.w)
+      ? seg.w
+      : Array.isArray(seg.words)
+        ? seg.words
+        : [];
 
     const words: Array<{
       id: string;
@@ -139,18 +169,21 @@ function sanitizeTranscription(payload: GeminiTranscriptionPayload) {
 
     for (let wIdx = 0; wIdx < rawWords.length; wIdx++) {
       const w = rawWords[wIdx];
-      const text = String(w.text ?? '').trim();
+      const text = String(w.t ?? w.text ?? '').trim();
       if (!text) continue;
-      let start = Number.isFinite(w.start) ? Math.max(0, Number(w.start)) : globalCursor;
-      let end = Number.isFinite(w.end)
-        ? Math.max(start + 0.05, Number(w.end))
+      const rawStart = w.s ?? w.start;
+      const rawEnd = w.e ?? w.end;
+      const rawConfVal = w.c ?? w.confidence;
+      let start = Number.isFinite(rawStart) ? Math.max(0, Number(rawStart)) : globalCursor;
+      let end = Number.isFinite(rawEnd)
+        ? Math.max(start + 0.05, Number(rawEnd))
         : start + 0.25;
       if (start < globalCursor) {
         start = globalCursor;
         if (end <= start) end = start + 0.12;
       }
       globalCursor = end;
-      const rawConf = Number.isFinite(w.confidence) ? Number(w.confidence) : 0.95;
+      const rawConf = Number.isFinite(rawConfVal) ? Number(rawConfVal) : 0.95;
       const confidence = Math.min(1, Math.max(0, Number(rawConf.toFixed(2))));
       words.push({
         id: `w_${sIdx}_${wIdx}_${Math.random().toString(36).slice(2, 6)}`,
@@ -247,14 +280,7 @@ export async function transcribeBufferAndRespond(params: {
       ? customDictionaryInput.trim().slice(0, 2000)
       : '';
 
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
+  const ai = getSharedGeminiClient(apiKey);
 
   try {
     const mimeType = resolveMimeType(originalName, rawMimeType);
@@ -266,95 +292,58 @@ export async function transcribeBufferAndRespond(params: {
     };
 
     const promptLines = [
-      `Transcreva toda a fala deste arquivo com precisão de nível de palavra utilizando obrigatoriamente o idioma com código ${language} (${languageLabel}).`,
-      'Regras obrigatórias:',
-      `1. Código do idioma alvo para transcrição: ${language}. Se a fala estiver em outro idioma, transcreva/adapte fielmente para ${languageLabel} (${language}), mantendo o sincronismo exato.`,
-      '2. Se o áudio NÃO tiver voz humana falando palavras identificáveis (mudo, silêncio, apenas música instrumental, ruído ou tons contínuos), defina obrigatoriamente hasSpeech como false e retorne segments como []. Nunca invente falas inexistentes.',
-      '3. Caso haja fala, defina hasSpeech como true e agrupe as falas em segmentos curtos e dinâmicos (2 a 4 palavras por bloco, ideal para legendas de vídeos curtos estilo Reels/TikTok).',
-      '4. Para CADA palavra dentro de words, forneça text, start (em segundos decimais, ex: 1.42), end (em segundos decimais, ex: 1.78) e confidence (número de 0.0 a 1.0).',
-      '5. Seja honesto na pontuação de confidence: atribua valor menor que 0.78 (ex: 0.55 a 0.75) sempre que houver dúvida ortográfica, nome próprio incomum, fala muito rápida, música alta ao fundo ou áudio pouco claro, para sinalizar ao usuário que aquela palavra merece revisão.',
-      '6. Mantenha pontuação natural e ortografia correta no idioma solicitado.',
+      `Transcreva toda a fala para ${language} (${languageLabel}) com timestamps por palavra.`,
+      'Regras:',
+      `1. Idioma alvo obrigatório: ${language} (${languageLabel}).`,
+      '2. Sem fala humana (silêncio, só música ou ruído): hasSpeech=false e segments=[]. Nunca invente fala.',
+      '3. Com fala: hasSpeech=true; agrupe em blocos curtos de 2 a 4 palavras em w.',
+      '4. Em cada item de w: t (palavra), s (início em segundos), e (fim em segundos), c (confiança 0.0-1.0; <0.78 se houver dúvida).',
     ];
 
     if (customDictionary) {
-      promptLines.push(
-        `7. Dicionário personalizado ("Palavras importantes" do usuário): utilize EXATAMENTE estas grafias, nomes próprios, termos técnicos ou expressões sempre que identificar pronúncia compatível no áudio: ${customDictionary}`,
-      );
+      promptLines.push(`5. Grafias obrigatórias: ${customDictionary}`);
     }
 
     const prompt = promptLines.join('\n');
-    const systemInstruction = `Você é um engenheiro especialista em legendagem automática de vídeos curtos. Transcreva exclusivamente usando o código de idioma ${language} (${languageLabel}) e retorne JSON válido seguindo o schema, com tempos exatos em segundos e confiança calibrada para cada palavra falada.`;
+    const systemInstruction = `Especialista em legendagem rápida de vídeos curtos. Transcreva em ${language} (${languageLabel}) retornando JSON compacto conforme o schema.`;
 
     const responseSchema = {
       type: Type.OBJECT,
       properties: {
-        hasSpeech: {
-          type: Type.BOOLEAN,
-          description:
-            'true se houver fala humana audível no vídeo, false se estiver mudo ou sem fala.',
-        },
-        detectedLanguage: {
-          type: Type.STRING,
-          description: 'Código ou nome do idioma detectado na fala.',
-        },
+        hasSpeech: { type: Type.BOOLEAN },
+        detectedLanguage: { type: Type.STRING },
         segments: {
           type: Type.ARRAY,
-          description:
-            'Lista ordenada cronologicamente de blocos curtos de legenda.',
           items: {
             type: Type.OBJECT,
             properties: {
-              text: {
-                type: Type.STRING,
-                description:
-                  'Texto completo do bloco de legenda (2 a 6 palavras).',
-              },
-              start: {
-                type: Type.NUMBER,
-                description: 'Tempo de início do bloco em segundos.',
-              },
-              end: {
-                type: Type.NUMBER,
-                description: 'Tempo de término do bloco em segundos.',
-              },
-              words: {
+              w: {
                 type: Type.ARRAY,
+                description: '2 a 4 palavras por bloco.',
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    text: {
-                      type: Type.STRING,
-                      description:
-                        'Palavra individual (incluindo pontuação anexa, se houver).',
-                    },
-                    start: {
-                      type: Type.NUMBER,
-                      description: 'Início exato da palavra em segundos.',
-                    },
-                    end: {
-                      type: Type.NUMBER,
-                      description: 'Término exato da palavra em segundos.',
-                    },
-                    confidence: {
-                      type: Type.NUMBER,
-                      description:
-                        'Confiança de 0.0 a 1.0 na transcrição exata desta palavra (< 0.78 quando incerta).',
-                    },
+                    t: { type: Type.STRING, description: 'Palavra' },
+                    s: { type: Type.NUMBER, description: 'Início (s)' },
+                    e: { type: Type.NUMBER, description: 'Fim (s)' },
+                    c: { type: Type.NUMBER, description: 'Confiança 0-1' },
                   },
-                  required: ['text', 'start', 'end', 'confidence'],
+                  required: ['t', 's', 'e', 'c'],
                 },
               },
             },
-            required: ['text', 'start', 'end', 'words'],
+            required: ['w'],
           },
         },
       },
       required: ['hasSpeech', 'detectedLanguage', 'segments'],
     };
 
-    const candidateModels = mimeType.startsWith('audio/')
-      ? ['gemini-3.5-transcribe', 'gemini-3.1-flash-lite', 'gemini-4-hydrogen']
-      : ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
+    const activeCandidates = DEFAULT_CANDIDATE_MODELS.filter(
+      (m) => !unavailableModels.has(m),
+    );
+    const candidateModels =
+      activeCandidates.length > 0 ? activeCandidates : [...DEFAULT_CANDIDATE_MODELS];
 
     let response: Awaited<ReturnType<typeof ai.models.generateContent>> | undefined;
     let lastModelError: unknown;
@@ -372,7 +361,7 @@ export async function transcribeBufferAndRespond(params: {
                 parts: [mediaPart, { text: prompt }],
               },
               config: {
-                abortSignal: AbortSignal.timeout(38000),
+                abortSignal: AbortSignal.timeout(35000),
                 ...(isFlashLite
                   ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } }
                   : isHydrogen
@@ -390,6 +379,9 @@ export async function transcribeBufferAndRespond(params: {
       } catch (err) {
         lastModelError = err;
         const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.includes('404') || errMsg.includes('NOT_FOUND')) {
+          unavailableModels.add(modelName);
+        }
         if (
           errMsg.includes('PERMISSION_DENIED') ||
           errMsg.includes('API_KEY_INVALID') ||

@@ -397,7 +397,15 @@ export function DemoVideoPreview() {
     const width = activeEl.offsetWidth;
     const height = activeEl.offsetHeight;
 
-    setKaraokePill({ left, top, width, height, visible: true });
+    setKaraokePill((prev) =>
+      prev.visible &&
+      prev.left === left &&
+      prev.top === top &&
+      prev.width === width &&
+      prev.height === height
+        ? prev
+        : { left, top, width, height, visible: true },
+    );
   }, [fraseAtual.preset, fraseIdx, activeWordIdx, visibleCount, editStage]);
 
   // 3D parallax hover handlers (pure CSS transform on ref)

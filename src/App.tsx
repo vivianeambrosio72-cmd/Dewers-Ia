@@ -6,9 +6,11 @@ import {
   ArrowRight,
   CheckCircle2,
   Clapperboard,
+  ExternalLink,
   Loader2,
   LogIn,
   LogOut,
+  RotateCw,
   ShieldCheck,
   Sparkles,
   Terminal,
@@ -37,6 +39,7 @@ import {
   PRESET_DEFINITIONS,
   type AdminVerifyResponse,
   type MulticaixaSettingsRecord,
+  type NoiseReductionConfig,
   type ProOrderRecord,
   type StyleConfig,
   type SubtitleSegment,
@@ -78,6 +81,7 @@ import {
 interface BannerAlert {
   type: 'error' | 'info' | 'success';
   message: string;
+  needsSessionRefresh?: boolean;
 }
 
 const MAX_UPLOAD_MB = 200;
@@ -90,6 +94,7 @@ interface LocalDraftPayload {
   language: SupportedLanguage;
   customDictionary: string;
   styleConfig: StyleConfig;
+  noiseReduction?: NoiseReductionConfig;
   segments: SubtitleSegment[];
   subtitlesReviewed: boolean;
   updatedAt: number;
@@ -200,6 +205,18 @@ export default function App() {
       return initialDraft.styleConfig;
     }
     return { ...PRESET_DEFINITIONS.viral_impacto.style };
+  });
+  const [noiseReduction, setNoiseReduction] = useState<NoiseReductionConfig>(() => {
+    if (
+      initialDraft?.noiseReduction &&
+      typeof initialDraft.noiseReduction.enabled === 'boolean' &&
+      (initialDraft.noiseReduction.level === 'light' ||
+        initialDraft.noiseReduction.level === 'medium' ||
+        initialDraft.noiseReduction.level === 'strong')
+    ) {
+      return initialDraft.noiseReduction;
+    }
+    return { enabled: false, level: 'medium' };
   });
 
 
@@ -335,6 +352,7 @@ export default function App() {
         language,
         customDictionary,
         styleConfig,
+        noiseReduction,
         segments:
           segments.length > 0
             ? segments
@@ -359,6 +377,7 @@ export default function App() {
     language,
     customDictionary,
     styleConfig,
+    noiseReduction,
     segments,
     subtitlesReviewed,
   ]);
@@ -414,6 +433,15 @@ export default function App() {
         if (savedDraft.styleConfig && PRESET_DEFINITIONS[savedDraft.styleConfig.preset]) {
           setStyleConfig(savedDraft.styleConfig);
         }
+        if (
+          savedDraft.noiseReduction &&
+          typeof savedDraft.noiseReduction.enabled === 'boolean' &&
+          (savedDraft.noiseReduction.level === 'light' ||
+            savedDraft.noiseReduction.level === 'medium' ||
+            savedDraft.noiseReduction.level === 'strong')
+        ) {
+          setNoiseReduction(savedDraft.noiseReduction);
+        }
         setSubtitlesReviewed(Boolean(savedDraft.subtitlesReviewed));
         setTranscribedKey(`${fileSig}_${savedDraft.language || 'pt-BR'}`);
         setMaxReachedStep(2);
@@ -439,6 +467,55 @@ export default function App() {
     return '';
   };
 
+  const isProxyCookieCheckHtml = (responseText: string): boolean => {
+    const trimmed = (responseText || '').trim();
+    if (!/^<!doctype|^<html/i.test(trimmed)) return false;
+    const titleHint = extractHtmlTitleHint(trimmed);
+    return (
+      /cookie\s*check/i.test(titleHint) ||
+      /cookie\s*check/i.test(trimmed.slice(0, 1200))
+    );
+  };
+
+  const tryRefreshProxySessionCookie = (): Promise<void> =>
+    new Promise((resolve) => {
+      if (typeof document === 'undefined') {
+        resolve();
+        return;
+      }
+      const iframe = document.createElement('iframe');
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.tabIndex = -1;
+      iframe.style.position = 'fixed';
+      iframe.style.width = '1px';
+      iframe.style.height = '1px';
+      iframe.style.opacity = '0';
+      iframe.style.pointerEvents = 'none';
+      iframe.style.border = '0';
+
+      let settled = false;
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        if (iframe.parentNode) {
+          iframe.parentNode.removeChild(iframe);
+        }
+        resolve();
+      };
+
+      const timer = window.setTimeout(cleanup, 2800);
+      iframe.onload = () => {
+        window.setTimeout(cleanup, 400);
+      };
+      iframe.onerror = cleanup;
+      iframe.src = `/api/health?cookie_refresh=1&t=${Date.now()}`;
+      document.body.appendChild(iframe);
+    });
+
+  const SESSION_COOKIE_ERROR_MSG =
+    'A sessão de segurança da pré-visualização expirou ou o navegador bloqueou cookies neste quadro. Recarregue a página ou abra o aplicativo em uma nova guia para continuar.';
+
   const parseServerError = (
     status: number,
     responseText: string,
@@ -459,6 +536,10 @@ export default function App() {
       context,
       preview: trimmed.slice(0, 240),
     });
+
+    if (isProxyCookieCheckHtml(trimmed)) {
+      return SESSION_COOKIE_ERROR_MSG;
+    }
 
     if (status === 413) {
       return 'O arquivo ultrapassou o limite aceito pelo servidor neste envio. Tente um vídeo menor.';
@@ -527,6 +608,13 @@ export default function App() {
     setShowProModal(true);
   }, []);
 
+  const healthCacheRef = useRef<{
+    checkedAt: number;
+    maxUploadBytes: number;
+    chunkSupported: boolean;
+    platform: string;
+  } | null>(null);
+
   const runGeminiTranscription = useCallback(
     async (targetLang: SupportedLanguage) => {
       if (!videoFile) return;
@@ -548,22 +636,100 @@ export default function App() {
 
       setAlert(null);
       setIsTranscribing(true);
-      setTranscribeProgress(5);
-      setTranscribeStage('Conectando ao servidor de transcrição...');
+      setTranscribeProgress(6);
+      setTranscribeStage('Extraindo e otimizando áudio do vídeo...');
 
       let serverMaxUploadBytes = 100 * 1024 * 1024;
       let serverChunkSupported = true;
       let serverPlatform = 'node';
 
-      // Verify /api/health first so proxy/auth/static-host/Vercel limits are caught immediately
-      try {
-        const healthRes = await fetch('/api/health', {
-          method: 'GET',
-          cache: 'no-store',
-          credentials: 'include',
-          headers: { Accept: 'application/json' },
-        });
-        const healthText = await healthRes.text();
+      const formatFetchNetworkError = (err: unknown, stageLabel: string): string => {
+        const raw = err instanceof Error ? err.message : String(err);
+        if (/failed to fetch|networkerror|load failed|fetch/i.test(raw)) {
+          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            return 'Sem conexão com a internet durante o envio. Verifique a rede e tente novamente.';
+          }
+          return `Falha temporária de conexão com o servidor (${stageLabel}). Tente novamente em alguns segundos.`;
+        }
+        return raw;
+      };
+
+      const fetchWithRetry = async (
+        input: RequestInfo | URL,
+        init: RequestInit,
+        stageLabel: string,
+        attempts = 3,
+        retryOnGatewayError = true,
+      ): Promise<globalThis.Response> => {
+        let lastErr: unknown;
+        let refreshedCookie = false;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          try {
+            const res = await fetch(input, init);
+            const contentType = res.headers.get('content-type') || '';
+            if (
+              !refreshedCookie &&
+              attempt < attempts &&
+              contentType.includes('text/html')
+            ) {
+              const preview = await res.clone().text().catch(() => '');
+              if (isProxyCookieCheckHtml(preview)) {
+                refreshedCookie = true;
+                await tryRefreshProxySessionCookie();
+                continue;
+              }
+            }
+            if (
+              retryOnGatewayError &&
+              attempt < attempts &&
+              (res.status === 502 || res.status === 503 || res.status === 504)
+            ) {
+              await new Promise((r) => setTimeout(r, 700 * attempt));
+              continue;
+            }
+            return res;
+          } catch (err) {
+            lastErr = err;
+            if (attempt < attempts) {
+              if (!refreshedCookie) {
+                refreshedCookie = true;
+                await tryRefreshProxySessionCookie();
+              } else {
+                await new Promise((r) => setTimeout(r, 700 * attempt));
+              }
+            }
+          }
+        }
+        throw new Error(formatFetchNetworkError(lastErr, stageLabel));
+      };
+
+      const resolveServerHealth = async () => {
+        const cached = healthCacheRef.current;
+        if (cached && Date.now() - cached.checkedAt < 60_000) {
+          return cached;
+        }
+        const fetchHealth = () =>
+          fetchWithRetry(
+            '/api/health',
+            {
+              method: 'GET',
+              cache: 'no-store',
+              credentials: 'include',
+              headers: { Accept: 'application/json' },
+            },
+            'verificação do servidor',
+            2,
+          );
+
+        let healthRes = await fetchHealth();
+        let healthText = await healthRes.text();
+
+        if (isProxyCookieCheckHtml(healthText)) {
+          await tryRefreshProxySessionCookie();
+          healthRes = await fetchHealth();
+          healthText = await healthRes.text();
+        }
+
         let healthOk = false;
         let parsedHealth: {
           status?: string;
@@ -588,45 +754,57 @@ export default function App() {
             'Chave da API Gemini (GEMINI_API_KEY) não configurada neste servidor. Adicione GEMINI_API_KEY nas Environment Variables da Vercel e faça um novo deploy.',
           );
         }
-        if (
-          typeof parsedHealth.maxUploadBytes === 'number' &&
-          parsedHealth.maxUploadBytes > 0
-        ) {
-          serverMaxUploadBytes = parsedHealth.maxUploadBytes;
-        }
-        if (typeof parsedHealth.chunkSupported === 'boolean') {
-          serverChunkSupported = parsedHealth.chunkSupported;
-        }
-        if (typeof parsedHealth.platform === 'string') {
-          serverPlatform = parsedHealth.platform;
-        }
+        const resolved = {
+          checkedAt: Date.now(),
+          maxUploadBytes:
+            typeof parsedHealth.maxUploadBytes === 'number' &&
+            parsedHealth.maxUploadBytes > 0
+              ? parsedHealth.maxUploadBytes
+              : 100 * 1024 * 1024,
+          chunkSupported:
+            typeof parsedHealth.chunkSupported === 'boolean'
+              ? parsedHealth.chunkSupported
+              : true,
+          platform:
+            typeof parsedHealth.platform === 'string'
+              ? parsedHealth.platform
+              : 'node',
+        };
+        healthCacheRef.current = resolved;
+        return resolved;
+      };
+
+      let prepared: Awaited<ReturnType<typeof prepareAudioForTranscription>>;
+      try {
+        // Run server health check concurrently with browser audio extraction (22s ~528 KB WAV parts)
+        const [healthInfo, audioResult] = await Promise.all([
+          resolveServerHealth(),
+          prepareAudioForTranscription(
+            videoFile,
+            2.4 * 1024 * 1024,
+            22,
+            noiseReduction,
+          ),
+        ]);
+        serverMaxUploadBytes = healthInfo.maxUploadBytes;
+        serverChunkSupported = healthInfo.chunkSupported;
+        serverPlatform = healthInfo.platform;
+        prepared = audioResult;
       } catch (healthErr) {
         setIsTranscribing(false);
         setTranscribeProgress(0);
+        const msg =
+          healthErr instanceof Error
+            ? formatFetchNetworkError(healthErr, 'conexão inicial')
+            : 'Não foi possível conectar ao servidor de transcrição.';
         setAlert({
           type: 'error',
-          message:
-            healthErr instanceof Error
-              ? healthErr.message
-              : 'Não foi possível conectar ao servidor de transcrição.',
+          message: msg,
+          needsSessionRefresh: msg === SESSION_COOKIE_ERROR_MSG,
         });
         return;
       }
 
-      setTranscribeStage('Extraindo e otimizando áudio do vídeo...');
-      const maxAudioWavBytes = serverChunkSupported
-        ? 14 * 1024 * 1024
-        : Math.max(
-            1024 * 1024,
-            Math.min(2.6 * 1024 * 1024, Math.floor(serverMaxUploadBytes * 0.65)),
-          );
-      const maxPartDurationSec = serverChunkSupported ? 180 : 50;
-
-      const prepared = await prepareAudioForTranscription(
-        videoFile,
-        maxAudioWavBytes,
-        maxPartDurationSec,
-      );
       if (prepared.isSilent) {
         setIsTranscribing(false);
         setTranscribeProgress(0);
@@ -665,100 +843,142 @@ export default function App() {
       }
 
       const CHUNK_THRESHOLD_BYTES = serverChunkSupported
-        ? 10 * 1024 * 1024
+        ? 3.5 * 1024 * 1024
         : serverMaxUploadBytes + 1;
       const JSON_FALLBACK_MAX_BYTES = serverChunkSupported
-        ? 12 * 1024 * 1024
+        ? 8 * 1024 * 1024
         : Math.floor(serverMaxUploadBytes * 0.72);
-      const CHUNK_SIZE_BYTES = 3 * 1024 * 1024; // 3 MB chunks (safe under proxy body limits)
-      let aiTicker: number | undefined;
+      const CHUNK_SIZE_BYTES = 1.5 * 1024 * 1024; // 1.5 MB chunks (safe under Cloud Run & proxy limits)
+      const totalParts = partsToProcess.length;
+      const partProgress = new Float64Array(totalParts);
+      const partPhase: Array<'pending' | 'uploading' | 'ai' | 'done'> = Array.from(
+        { length: totalParts },
+        () => 'pending',
+      );
+      let completedParts = 0;
+
+      const syncAggregateProgress = () => {
+        let sum = 0;
+        for (let i = 0; i < totalParts; i++) {
+          sum += partProgress[i];
+        }
+        const avg = sum / Math.max(1, totalParts);
+        const pct = Math.min(96, 12 + Math.round(avg * 84));
+        setTranscribeProgress(pct);
+
+        if (totalParts === 1) {
+          setTranscribeStage(
+            partPhase[0] === 'uploading'
+              ? prepared.audioParts.length > 0
+                ? 'Enviando áudio otimizado...'
+                : 'Enviando vídeo para transcrição...'
+              : 'Transcrevendo áudio com Gemini...',
+          );
+        } else {
+          setTranscribeStage(
+            `Transcrevendo áudio em paralelo (${completedParts}/${totalParts} partes)...`,
+          );
+        }
+      };
+
+      const aiProgressTimer = window.setInterval(() => {
+        let changed = false;
+        for (let i = 0; i < totalParts; i++) {
+          if (partPhase[i] === 'ai' && partProgress[i] < 0.94) {
+            partProgress[i] = Math.min(0.94, partProgress[i] + 0.035);
+            changed = true;
+          }
+        }
+        if (changed) {
+          syncAggregateProgress();
+        }
+      }, 450);
 
       const transcribeSingleTarget = async (
         targetFile: File,
         partIdx: number,
-        totalParts: number,
         allowNoAudio: boolean,
       ): Promise<{
         segments: SubtitleSegment[];
         detectedLanguage: string;
         usage?: TranscriptionUsageMeta;
       }> => {
-        const partLabel = totalParts > 1 ? ` (${partIdx + 1}/${totalParts})` : '';
-        const basePct = 10 + Math.round((partIdx / totalParts) * 85);
-        const spanPct = Math.max(5, Math.round(85 / totalParts));
-        const uploadMaxPct = Math.min(94, basePct + Math.round(spanPct * 0.45));
-        const aiMaxPct = Math.min(95, basePct + spanPct);
-
         const sendViaChunkedUpload = async (): Promise<{
           segments: SubtitleSegment[];
           detectedLanguage: string;
           usage?: TranscriptionUsageMeta;
         }> => {
-          const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          const uploadId = `${Date.now()}_${partIdx}_${Math.random().toString(36).slice(2, 8)}`;
           const totalChunks = Math.ceil(targetFile.size / CHUNK_SIZE_BYTES);
+          partPhase[partIdx] = 'uploading';
 
           for (let i = 0; i < totalChunks; i++) {
             const start = i * CHUNK_SIZE_BYTES;
             const end = Math.min(targetFile.size, start + CHUNK_SIZE_BYTES);
             const chunkBlob = targetFile.slice(start, end);
 
-            const chunkForm = new FormData();
-            chunkForm.append('uploadId', uploadId);
-            chunkForm.append('chunkIndex', String(i));
-            chunkForm.append('chunk', chunkBlob, `part_${i}`);
-
-            setTranscribeStage(
-              `Enviando vídeo${partLabel} (${i + 1}/${totalChunks})...`,
+            const chunkRes = await fetchWithRetry(
+              '/api/transcribe/chunk',
+              {
+                method: 'POST',
+                credentials: 'include',
+                headers: { Accept: 'application/json' },
+                body: (() => {
+                  const chunkForm = new FormData();
+                  chunkForm.append('uploadId', uploadId);
+                  chunkForm.append('chunkIndex', String(i));
+                  chunkForm.append('chunk', chunkBlob, `part_${i}`);
+                  return chunkForm;
+                })(),
+              },
+              `envio parte ${i + 1}/${totalChunks}`,
+              3,
             );
-            const chunkRes = await fetch('/api/transcribe/chunk', {
-              method: 'POST',
-              credentials: 'include',
-              headers: { Accept: 'application/json' },
-              body: chunkForm,
-            });
             const chunkText = await chunkRes.text();
             if (!chunkRes.ok) {
               throw new Error(
                 parseServerError(chunkRes.status, chunkText, 'chunk'),
               );
             }
-            setTranscribeProgress(
-              Math.min(
-                uploadMaxPct,
-                basePct + Math.round(((i + 1) / totalChunks) * (uploadMaxPct - basePct)),
-              ),
+            partProgress[partIdx] = Math.max(
+              partProgress[partIdx],
+              ((i + 1) / totalChunks) * 0.35,
             );
+            syncAggregateProgress();
           }
 
-          setTranscribeProgress(uploadMaxPct);
-          setTranscribeStage(`Transcrevendo áudio com Gemini${partLabel}...`);
-          aiTicker = window.setInterval(() => {
-            setTranscribeProgress((prev) => (prev < aiMaxPct ? prev + 1 : prev));
-          }, 700);
+          partProgress[partIdx] = Math.max(partProgress[partIdx], 0.38);
+          partPhase[partIdx] = 'ai';
+          syncAggregateProgress();
 
-          const completeRes = await fetch('/api/transcribe/complete', {
-            method: 'POST',
-            credentials: 'include',
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
+          const completeRes = await fetchWithRetry(
+            '/api/transcribe/complete',
+            {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+              },
+              body: JSON.stringify({
+                uploadId,
+                totalChunks,
+                fileName: targetFile.name,
+                mimeType: targetFile.type || 'video/mp4',
+                language: targetLang,
+                customDictionary: customDictionary.trim(),
+              }),
             },
-            body: JSON.stringify({
-              uploadId,
-              totalChunks,
-              fileName: targetFile.name,
-              mimeType: targetFile.type || 'video/mp4',
-              language: targetLang,
-              customDictionary: customDictionary.trim(),
-            }),
-          });
-          if (aiTicker) {
-            clearInterval(aiTicker);
-            aiTicker = undefined;
-          }
+            'finalização do envio',
+            3,
+            false,
+          );
 
           const completeText = await completeRes.text();
           let data: {
+            status?: string;
+            jobId?: string;
+            stage?: string;
             segments?: SubtitleSegment[];
             detectedLanguage?: string;
             usage?: TranscriptionUsageMeta;
@@ -770,6 +990,61 @@ export default function App() {
           } catch {
             throw new Error(
               parseServerError(completeRes.status, completeText, 'complete'),
+            );
+          }
+
+          if (completeRes.status === 202 || data.status === 'processing') {
+            const jobId = data.jobId;
+            if (!jobId) {
+              throw new Error('Identificador da tarefa de transcrição ausente.');
+            }
+            const maxPollUntil = Date.now() + 5 * 60 * 1000;
+            while (Date.now() < maxPollUntil) {
+              await new Promise((r) => setTimeout(r, 1200));
+              const pollRes = await fetchWithRetry(
+                `/api/transcribe/status/${encodeURIComponent(jobId)}`,
+                {
+                  method: 'GET',
+                  cache: 'no-store',
+                  credentials: 'include',
+                  headers: { Accept: 'application/json' },
+                },
+                'acompanhamento da transcrição',
+                3,
+              );
+              const pollText = await pollRes.text();
+              let pollData: typeof data = {};
+              try {
+                pollData = JSON.parse(pollText || '{}');
+              } catch {
+                throw new Error(
+                  parseServerError(pollRes.status, pollText, 'status-poll'),
+                );
+              }
+
+              if (pollData.status === 'processing') {
+                continue;
+              }
+
+              if (allowNoAudio && (pollRes.status === 422 || pollData.code === 'NO_AUDIO')) {
+                return { segments: [], detectedLanguage: targetLang };
+              }
+
+              if (!pollRes.ok || !Array.isArray(pollData.segments)) {
+                throw new Error(
+                  pollData.error ||
+                    parseServerError(pollRes.status, pollText, 'status-error'),
+                );
+              }
+
+              return {
+                segments: pollData.segments,
+                detectedLanguage: pollData.detectedLanguage || targetLang,
+                usage: pollData.usage,
+              };
+            }
+            throw new Error(
+              'O processamento do vídeo demorou mais que o esperado. Tente novamente em instantes.',
             );
           }
 
@@ -796,24 +1071,30 @@ export default function App() {
           detectedLanguage: string;
           usage?: TranscriptionUsageMeta;
         }> => {
-          setTranscribeStage(`Reenviando áudio em formato compatível${partLabel}...`);
-          setTranscribeProgress(uploadMaxPct);
+          partProgress[partIdx] = Math.max(partProgress[partIdx], 0.35);
+          partPhase[partIdx] = 'ai';
+          syncAggregateProgress();
           const audioBase64 = await fileToBase64(targetFile);
-          const res = await fetch('/api/transcribe-json', {
-            method: 'POST',
-            credentials: 'include',
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
+          const res = await fetchWithRetry(
+            '/api/transcribe-json',
+            {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+              },
+              body: JSON.stringify({
+                audioBase64,
+                fileName: targetFile.name,
+                mimeType: targetFile.type || 'audio/wav',
+                language: targetLang,
+                customDictionary: customDictionary.trim(),
+              }),
             },
-            body: JSON.stringify({
-              audioBase64,
-              fileName: targetFile.name,
-              mimeType: targetFile.type || 'audio/wav',
-              language: targetLang,
-              customDictionary: customDictionary.trim(),
-            }),
-          });
+            'envio alternativo de áudio',
+            2,
+          );
           const text = await res.text();
           let data: {
             segments?: SubtitleSegment[];
@@ -864,36 +1145,23 @@ export default function App() {
             xhr.withCredentials = true;
             xhr.setRequestHeader('Accept', 'application/json');
             xhr.timeout = 240000;
+            partPhase[partIdx] = 'uploading';
 
             xhr.upload.onprogress = (ev) => {
               if (ev.lengthComputable) {
                 const ratio = ev.loaded / Math.max(1, ev.total);
-                const pct = Math.min(
-                  uploadMaxPct,
-                  basePct + Math.round(ratio * (uploadMaxPct - basePct)),
-                );
-                setTranscribeProgress(pct);
-                setTranscribeStage(
-                  prepared.audioParts.length > 0
-                    ? `Enviando áudio otimizado${partLabel}...`
-                    : `Enviando vídeo para transcrição${partLabel}...`,
-                );
+                partProgress[partIdx] = Math.max(partProgress[partIdx], ratio * 0.35);
+                syncAggregateProgress();
               }
             };
 
             xhr.upload.onload = () => {
-              setTranscribeProgress(uploadMaxPct);
-              setTranscribeStage(`Transcrevendo áudio com Gemini${partLabel}...`);
-              aiTicker = window.setInterval(() => {
-                setTranscribeProgress((prev) => (prev < aiMaxPct ? prev + 1 : prev));
-              }, 700);
+              partProgress[partIdx] = Math.max(partProgress[partIdx], 0.38);
+              partPhase[partIdx] = 'ai';
+              syncAggregateProgress();
             };
 
             xhr.onload = () => {
-              if (aiTicker) {
-                clearInterval(aiTicker);
-                aiTicker = undefined;
-              }
               const contentType = xhr.getResponseHeader('content-type') || '';
               if (
                 xhr.responseURL &&
@@ -951,10 +1219,6 @@ export default function App() {
             };
 
             xhr.ontimeout = () => {
-              if (aiTicker) {
-                clearInterval(aiTicker);
-                aiTicker = undefined;
-              }
               reject(
                 new Error(
                   'O tempo de transcrição excedeu o limite. Tente um vídeo mais curto ou verifique sua conexão.',
@@ -963,10 +1227,6 @@ export default function App() {
             };
 
             xhr.onerror = () => {
-              if (aiTicker) {
-                clearInterval(aiTicker);
-                aiTicker = undefined;
-              }
               reject(
                 new Error(
                   'Erro de rede ao enviar o vídeo. Verifique sua conexão e tente novamente.',
@@ -982,12 +1242,14 @@ export default function App() {
               ? multipartErr.message
               : String(multipartErr);
           const looksLikeHtmlOrProxyIssue =
-            msg.includes('HTML') || msg.includes('sem enviar dados');
+            msg.includes('HTML') ||
+            msg.includes('sem enviar dados') ||
+            msg.includes('Erro de rede');
           const looksLikeTooLarge =
             msg.includes('ultrapassou o limite') ||
             msg.includes('entity too large') ||
             msg.includes('413');
-          if (serverChunkSupported && looksLikeTooLarge) {
+          if (serverChunkSupported && (looksLikeTooLarge || looksLikeHtmlOrProxyIssue)) {
             return sendViaChunkedUpload();
           }
           if (
@@ -1002,21 +1264,63 @@ export default function App() {
 
       let totalTokensSum = 0;
       let estimatedCostSum = 0;
-      let lastModelUsed = 'gemini-3.5-transcribe';
+      let lastModelUsed = 'gemini-3.1-flash-lite';
 
       try {
         const mergedSegments: SubtitleSegment[] = [];
         let finalDetectedLanguage: string = targetLang;
-        const totalParts = partsToProcess.length;
+        const partResults = new Array<{
+          segments: SubtitleSegment[];
+          detectedLanguage: string;
+          usage?: TranscriptionUsageMeta;
+        }>(totalParts);
+
+        const maxConcurrency = Math.min(4, totalParts);
+        let nextPartIndex = 0;
+        let fatalError: unknown = null;
+
+        syncAggregateProgress();
+
+        const worker = async () => {
+          while (!fatalError) {
+            const idx = nextPartIndex;
+            nextPartIndex += 1;
+            if (idx >= totalParts) break;
+
+            try {
+              const part = partsToProcess[idx];
+              const res = await transcribeSingleTarget(
+                part.file,
+                idx,
+                totalParts > 1,
+              );
+              partResults[idx] = res;
+              partPhase[idx] = 'done';
+              partProgress[idx] = 1;
+              completedParts += 1;
+              syncAggregateProgress();
+            } catch (err) {
+              if (!fatalError) {
+                fatalError = err;
+              }
+              break;
+            }
+          }
+        };
+
+        await Promise.all(
+          Array.from({ length: maxConcurrency }, () => worker()),
+        );
+
+        if (fatalError) {
+          throw fatalError;
+        }
 
         for (let idx = 0; idx < totalParts; idx++) {
           const part = partsToProcess[idx];
-          const partResult = await transcribeSingleTarget(
-            part.file,
-            idx,
-            totalParts,
-            totalParts > 1,
-          );
+          const partResult = partResults[idx];
+          if (!partResult) continue;
+
           if (idx === 0 && partResult.detectedLanguage) {
             finalDetectedLanguage = partResult.detectedLanguage;
           }
@@ -1090,7 +1394,7 @@ export default function App() {
               : `Transcrição concluída (${mergedSegments.length} blocos, ${finalDetectedLanguage}). Revise o texto e clique em "Legendas revisadas" para continuar.`,
         });
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
+        const msg = formatFetchNetworkError(error, 'processamento do vídeo');
         if (user) {
           void logTranscriptionActivity({
             user,
@@ -1108,9 +1412,13 @@ export default function App() {
             errorMessage: msg,
           });
         }
-        setAlert({ type: 'error', message: msg });
+        setAlert({
+          type: 'error',
+          message: msg,
+          needsSessionRefresh: msg === SESSION_COOKIE_ERROR_MSG,
+        });
       } finally {
-        if (aiTicker) clearInterval(aiTicker);
+        clearInterval(aiProgressTimer);
         setTimeout(() => {
           setIsTranscribing(false);
           setTranscribeProgress(0);
@@ -1121,6 +1429,7 @@ export default function App() {
       videoFile,
       customDictionary,
       duration,
+      noiseReduction,
       user,
       isEffectivePro,
       isGenerationBlocked,
@@ -1174,6 +1483,13 @@ export default function App() {
   };
 
   // Undo / Redo + Subtitle Editing Operations
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+  const undoStackRef = useRef(undoStack);
+  undoStackRef.current = undoStack;
+  const redoStackRef = useRef(redoStack);
+  redoStackRef.current = redoStack;
+
   const pushUndoSnapshot = useCallback((snapshot: SubtitleSegment[]) => {
     setUndoStack((prev) => [...prev.slice(-49), snapshot]);
     setRedoStack([]);
@@ -1184,30 +1500,38 @@ export default function App() {
   }, []);
 
   const handleUndo = useCallback(() => {
-    setUndoStack((prev) => {
-      if (prev.length === 0) return prev;
-      const previous = prev[prev.length - 1];
-      setSegments((curr) => {
-        setRedoStack((r) => [...r, curr]);
-        return previous;
-      });
-      markSubtitlesModified();
-      return prev.slice(0, -1);
-    });
+    const stack = undoStackRef.current;
+    if (stack.length === 0) return;
+    const previous = stack[stack.length - 1];
+    const current = segmentsRef.current;
+    setUndoStack(stack.slice(0, -1));
+    setRedoStack((r) => [...r, current]);
+    setSegments(previous);
+    markSubtitlesModified();
   }, [markSubtitlesModified]);
 
   const handleRedo = useCallback(() => {
-    setRedoStack((prev) => {
-      if (prev.length === 0) return prev;
-      const next = prev[prev.length - 1];
-      setSegments((curr) => {
-        setUndoStack((u) => [...u.slice(-49), curr]);
-        return next;
-      });
-      markSubtitlesModified();
-      return prev.slice(0, -1);
-    });
+    const stack = redoStackRef.current;
+    if (stack.length === 0) return;
+    const next = stack[stack.length - 1];
+    const current = segmentsRef.current;
+    setRedoStack(stack.slice(0, -1));
+    setUndoStack((u) => [...u.slice(-49), current]);
+    setSegments(next);
+    markSubtitlesModified();
   }, [markSubtitlesModified]);
+
+  const handleLoadedMetadataStable = useCallback((dur: number) => {
+    setDuration(dur);
+  }, []);
+
+  const handleClipPlaybackCompleteStable = useCallback(() => {
+    setClipEndTime(null);
+  }, []);
+
+  const handleResizeSegmentStartStable = useCallback(() => {
+    pushUndoSnapshot(segmentsRef.current);
+  }, [pushUndoSnapshot]);
 
   // Global Ctrl+Z / Ctrl+Y shortcuts while on Step 2
   useEffect(() => {
@@ -1431,6 +1755,7 @@ export default function App() {
         videoUrl,
         segments,
         style: styleConfig,
+        noiseReduction,
         onProgress: setExportProgress,
         signal: controller.signal,
       });
@@ -1699,7 +2024,7 @@ export default function App() {
           <div className="max-w-[1400px] mx-auto px-4 sm:px-6 pt-5">
             <div
               role="alert"
-              className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-sm ${
+              className={`p-3.5 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-sm ${
                 alert.type === 'error'
                   ? 'bg-rose-500/10 border-rose-500/30 text-rose-200'
                   : alert.type === 'info'
@@ -1707,7 +2032,7 @@ export default function App() {
                     : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
               }`}
             >
-              <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
                 {alert.type === 'error' ? (
                   <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
                 ) : (
@@ -1719,14 +2044,39 @@ export default function App() {
                 )}
                 <span className="break-words">{alert.message}</span>
               </div>
-              <button
-                type="button"
-                onClick={() => setAlert(null)}
-                aria-label="Fechar aviso"
-                className="text-slate-400 hover:text-white shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {alert.needsSessionRefresh && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => window.location.reload()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-white transition-colors"
+                    >
+                      <RotateCw className="w-3.5 h-3.5" />
+                      Recarregar
+                    </button>
+                    {typeof window !== 'undefined' && (
+                      <a
+                        href={window.location.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-xs font-semibold text-slate-950 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Abrir em nova guia
+                      </a>
+                    )}
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setAlert(null)}
+                  aria-label="Fechar aviso"
+                  className="text-slate-400 hover:text-white shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1763,12 +2113,14 @@ export default function App() {
               isPlaying={isPlaying}
               segments={[]}
               styleConfig={styleConfig}
+              noiseReduction={noiseReduction}
+              onNoiseReductionChange={setNoiseReduction}
               videoRef={videoRef}
               onSelectFile={handleSelectFile}
               onTogglePlay={handleTogglePlay}
               onSeek={handleSeek}
               onTimeSync={setCurrentTime}
-              onLoadedMetadata={(dur) => setDuration(dur)}
+              onLoadedMetadata={handleLoadedMetadataStable}
               onPlayStateChange={setIsPlaying}
             />
           </div>
@@ -1841,16 +2193,18 @@ export default function App() {
                   isPlaying={isPlaying}
                   segments={segments}
                   styleConfig={styleConfig}
+                  noiseReduction={noiseReduction}
+                  onNoiseReductionChange={setNoiseReduction}
                   clipEndTime={clipEndTime}
                   videoRef={videoRef}
                   onTogglePlay={handleTogglePlay}
                   onSeek={handleSeek}
                   onTimeSync={setCurrentTime}
-                  onLoadedMetadata={(dur) => setDuration(dur)}
+                  onLoadedMetadata={handleLoadedMetadataStable}
                   onPlayStateChange={setIsPlaying}
-                  onClipPlaybackComplete={() => setClipEndTime(null)}
+                  onClipPlaybackComplete={handleClipPlaybackCompleteStable}
                   onAddSubtitleAtPlayhead={handleAddSegmentAtCurrentTime}
-                  onResizeSegmentStart={() => pushUndoSnapshot(segments)}
+                  onResizeSegmentStart={handleResizeSegmentStartStable}
                   onResizeSegment={handleUpdateSegmentTimes}
                 />
               </section>
@@ -1924,6 +2278,8 @@ export default function App() {
             duration={duration}
             segments={segments}
             styleConfig={styleConfig}
+            noiseReduction={noiseReduction}
+            onNoiseReductionChange={setNoiseReduction}
             hasVideo={Boolean(videoUrl)}
             isExporting={isExporting}
             exportProgress={exportProgress}

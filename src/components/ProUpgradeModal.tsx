@@ -241,12 +241,17 @@ export function ProUpgradeModal({
       billingCycle: cycleToSave,
     })
       .catch((err) => {
+        const raw = err instanceof Error ? err.message : String(err);
+        let friendly = 'Não foi possível registar o pedido no servidor. Tente novamente.';
+        if (raw && !raw.trim().startsWith('{')) {
+          friendly = raw;
+        } else if (/permission/i.test(raw)) {
+          friendly =
+            'Permissão recusada ao registar pedido. Confirme se iniciou sessão com e-mail verificado e tente novamente.';
+        }
         setFeedback({
           type: 'error',
-          message:
-            err instanceof Error
-              ? err.message
-              : 'Não foi possível registar o pedido no servidor.',
+          message: friendly,
         });
       })
       .finally(() => {

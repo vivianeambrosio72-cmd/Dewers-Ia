@@ -77,6 +77,21 @@ function toIsoString(val: unknown): string {
   return new Date().toISOString();
 }
 
+async function resolveAuthEmail(user: User): Promise<string> {
+  try {
+    const tokenRes = await user.getIdTokenResult();
+    if (
+      typeof tokenRes.claims?.email === 'string' &&
+      tokenRes.claims.email.trim()
+    ) {
+      return tokenRes.claims.email.trim();
+    }
+  } catch {
+    // fallback to user.email
+  }
+  return (user.email || '').trim();
+}
+
 function detectAuthProvider(user: User): AuthProviderKind {
   const hasGoogle = user.providerData.some((p) => p.providerId === 'google.com');
   return hasGoogle ? 'google' : 'email';
@@ -556,7 +571,8 @@ export async function createProOrder(params: {
   user: User;
   billingCycle: 'monthly' | 'annual';
 }): Promise<ProOrderRecord> {
-  if (!params.user.email) {
+  const authEmail = await resolveAuthEmail(params.user);
+  if (!authEmail) {
     throw new Error('A conta precisa de ter um e-mail válido.');
   }
   const catalog = PRO_PLAN_CATALOG[params.billingCycle];
@@ -569,7 +585,7 @@ export async function createProOrder(params: {
       id: cleanId,
       userId: params.user.uid,
       userName,
-      userEmail: params.user.email,
+      userEmail: authEmail,
       billingCycle: catalog.billingCycle,
       planLabel: catalog.planLabel,
       amountKz: catalog.amountKz,
@@ -589,7 +605,7 @@ export async function createProOrder(params: {
       id: cleanId,
       userId: params.user.uid,
       userName,
-      userEmail: params.user.email,
+      userEmail: authEmail,
       billingCycle: catalog.billingCycle,
       planLabel: catalog.planLabel,
       amountKz: catalog.amountKz,
@@ -687,7 +703,8 @@ export async function logVideoExportActivity(params: {
   videoFileName: string;
   exportType: VideoExportType;
 }): Promise<void> {
-  if (!params.user.email) return;
+  const authEmail = await resolveAuthEmail(params.user);
+  if (!authEmail) return;
   const id = makeSafeId('exp');
   const path = `video_exports/${id}`;
   const cleanVideoKey = (params.videoKey || params.videoFileName || 'video')
@@ -701,7 +718,7 @@ export async function logVideoExportActivity(params: {
     await setDoc(doc(db, 'video_exports', id), {
       id,
       userId: params.user.uid,
-      userEmail: params.user.email,
+      userEmail: authEmail,
       userPlan: params.userPlan === 'PRO' ? 'PRO' : 'FREE',
       videoKey: cleanVideoKey || 'video',
       videoFileName: cleanFileName || 'video.mp4',
@@ -731,7 +748,8 @@ export async function logTranscriptionActivity(params: {
   errorCode?: string | null;
   errorMessage?: string | null;
 }): Promise<void> {
-  if (!params.user.email) return;
+  const authEmail = await resolveAuthEmail(params.user);
+  if (!authEmail) return;
   const id = makeSafeId('tx');
   const path = `transcriptions/${id}`;
   const clampedDuration = Math.max(
@@ -744,7 +762,7 @@ export async function logTranscriptionActivity(params: {
     await setDoc(doc(db, 'transcriptions', id), {
       id,
       userId: params.user.uid,
-      userEmail: params.user.email,
+      userEmail: authEmail,
       userPlan: params.userPlan === 'PRO' ? 'PRO' : 'FREE',
       videoFileName: (params.videoFileName || 'video.mp4').slice(0, 200),
       durationSeconds: Number(clampedDuration.toFixed(2)),
@@ -752,7 +770,7 @@ export async function logTranscriptionActivity(params: {
       language: params.language,
       segmentCount: Math.max(0, Math.min(5000, Math.round(params.segmentCount))),
       wordCount: Math.max(0, Math.min(50000, Math.round(params.wordCount))),
-      modelUsed: (params.modelUsed || 'gemini-3.5-transcribe').slice(0, 80),
+      modelUsed: (params.modelUsed || 'gemini-3.1-flash-lite').slice(0, 80),
       estimatedCostUsd: Math.max(
         0,
         Math.min(100, Number(params.estimatedCostUsd) || 0),
@@ -786,11 +804,22 @@ export async function verifyAdminSessionOnServer(
     const res = await fetch('/api/admin/verify', {
       method: 'GET',
       cache: 'no-store',
+      credentials: 'include',
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${idToken}`,
       },
     });
+
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      return {
+        authorized: false,
+        error:
+          'A sessão de segurança da pré-visualização expirou. Recarregue a página ou abra em uma nova guia.',
+        code: 'ADMIN_PROXY_COOKIE_CHECK',
+      };
+    }
 
     const data = (await res.json().catch(() => ({}))) as AdminVerifyResponse;
     if (!res.ok || !data.authorized) {

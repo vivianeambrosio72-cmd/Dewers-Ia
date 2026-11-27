@@ -65,6 +65,13 @@ export interface TransitionConfig {
   duration: number;
 }
 
+export type NoiseReductionLevel = 'light' | 'medium' | 'strong';
+
+export interface NoiseReductionConfig {
+  enabled: boolean;
+  level: NoiseReductionLevel;
+}
+
 export type WizardStep = 1 | 2 | 'export';
 
 export interface TransitionPoint {

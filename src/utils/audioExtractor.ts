@@ -1,3 +1,6 @@
+import type { NoiseReductionConfig } from '../types';
+import { applyOfflineNoiseReduction } from './audioNoiseReduction';
+
 export interface PreparedAudioPart {
   file: File;
   startTime: number;
@@ -113,8 +116,11 @@ function findQuietSplitSample(
   idealSplitSample: number,
   maxAllowedSample: number,
 ): number {
-  const searchRadius = Math.floor(4 * sampleRate);
-  const minBound = Math.max(minStartSample + Math.floor(sampleRate * 5), idealSplitSample - searchRadius);
+  const searchRadius = Math.floor(2.5 * sampleRate);
+  const minBound = Math.max(
+    minStartSample + Math.floor(sampleRate * 5),
+    idealSplitSample - searchRadius,
+  );
   const maxBound = Math.min(maxAllowedSample, idealSplitSample + searchRadius);
 
   if (maxBound <= minBound) {
@@ -145,13 +151,14 @@ function findQuietSplitSample(
 /**
  * Decodes video audio locally in-browser (for files up to 250 MB) to:
  * 1) Detect completely silent videos immediately before upload
- * 2) Produce lightweight 12–16 kHz mono WAV audio, automatically slicing long videos
- *    into small WAV parts that stay safely under Vercel's 4.5 MB serverless limit.
+ * 2) Produce compact 12 kHz mono WAV audio, automatically slicing videos > ~26s
+ *    into fast ~20-22s WAV parts for parallel transcription.
  */
 export async function prepareAudioForTranscription(
   file: File,
-  maxWavBytes: number = 14 * 1024 * 1024,
-  maxPartDurationSec: number = 180,
+  maxWavBytes: number = 2.4 * 1024 * 1024,
+  maxPartDurationSec: number = 22,
+  noiseReduction?: NoiseReductionConfig,
 ): Promise<PreparedAudioResult> {
   if (file.size > MAX_CLIENT_DECODE_BYTES) {
     return {
@@ -203,9 +210,12 @@ export async function prepareAudioForTranscription(
       return { isSilent: true, audioFile: null, audioParts: [] };
     }
 
-    // Use 16 kHz for normal videos, or 12 kHz for very long videos (> 8 min) to minimize memory
-    const selectedRate = decoded.duration > 480 ? 12000 : 16000;
-    const monoSamples = await renderMonoSamples(decoded, selectedRate);
+    // 12 kHz mono speech WAV keeps full vocal clarity while cutting upload & AI payload size by 25%
+    const selectedRate = 12000;
+    const rawMonoSamples = await renderMonoSamples(decoded, selectedRate);
+    const monoSamples = noiseReduction?.enabled
+      ? await applyOfflineNoiseReduction(rawMonoSamples, selectedRate, noiseReduction)
+      : rawMonoSamples;
     const totalSamples = monoSamples.length;
 
     const maxSamplesByBytes = Math.max(
@@ -220,11 +230,10 @@ export async function prepareAudioForTranscription(
 
     const baseName = file.name.replace(/\.[^.]+$/, '') || 'audio';
 
-    // Fast path: allow slightly larger single chunk (up to 1.25x duration if still under byte limit)
-    // so ~60s reels finish in a single API call
+    // Fast path: short clips (<= ~26s) run in a single direct request without splitting overhead
     const singlePartCeiling = Math.min(
       maxSamplesByBytes,
-      Math.floor(maxSamplesByDuration * 1.25),
+      Math.floor(maxSamplesByDuration * 1.18),
     );
     if (totalSamples <= singlePartCeiling) {
       const wavBlob = encodeMonoWav(monoSamples, selectedRate);
@@ -244,7 +253,7 @@ export async function prepareAudioForTranscription(
       };
     }
 
-    // Multi-part slicing along silence valleys
+    // Multi-part slicing along silence valleys for concurrent Gemini transcription
     const parts: PreparedAudioPart[] = [];
     let cursor = 0;
     let partIndex = 0;
@@ -254,8 +263,8 @@ export async function prepareAudioForTranscription(
       let endSample = totalSamples;
 
       if (remaining > maxSamplesPerPart) {
-        // Leave room for trailing tail; never leave a tiny < 5s orphan at the end
-        const idealSplit = cursor + Math.floor(maxSamplesPerPart * 0.92);
+        // Leave room for trailing tail; never leave a tiny < 4s orphan at the end
+        const idealSplit = cursor + Math.floor(maxSamplesPerPart * 0.9);
         const maxAllowed = cursor + maxSamplesPerPart;
         endSample = findQuietSplitSample(
           monoSamples,
@@ -265,8 +274,7 @@ export async function prepareAudioForTranscription(
           maxAllowed,
         );
         if (totalSamples - endSample < selectedRate * 4) {
-          // If remaining tail is tiny and fits under maxBytes, absorb or adjust slightly earlier
-          if (totalSamples - cursor <= maxSamplesByBytes) {
+          if (totalSamples - cursor <= Math.min(maxSamplesByBytes, Math.floor(maxSamplesPerPart * 1.2))) {
             endSample = totalSamples;
           }
         }

@@ -1,8 +1,10 @@
 import {
   PRESET_DEFINITIONS,
+  type NoiseReductionConfig,
   type StyleConfig,
   type SubtitleSegment,
 } from '../types';
+import { attachNoiseReductionChain } from './audioNoiseReduction';
 import { getActiveWordChunk, type ActiveWordChunk } from './subtitles';
 
 export interface ExportResult {
@@ -448,6 +450,7 @@ export async function exportVideoWithBurnedSubtitles(params: {
   videoUrl: string;
   segments: SubtitleSegment[];
   style: StyleConfig;
+  noiseReduction?: NoiseReductionConfig;
   onProgress: (percent: number) => void;
   signal?: AbortSignal;
 }): Promise<ExportResult> {
@@ -455,6 +458,7 @@ export async function exportVideoWithBurnedSubtitles(params: {
     videoUrl,
     segments,
     style,
+    noiseReduction,
     onProgress,
     signal,
   } = params;
@@ -502,7 +506,12 @@ export async function exportVideoWithBurnedSubtitles(params: {
   const audioCtx = new AudioCtx();
   const sourceNode = audioCtx.createMediaElementSource(video);
   const destNode = audioCtx.createMediaStreamDestination();
-  sourceNode.connect(destNode);
+  const noiseHandle = noiseReduction?.enabled
+    ? attachNoiseReductionChain(audioCtx, sourceNode, destNode, noiseReduction)
+    : null;
+  if (!noiseHandle) {
+    sourceNode.connect(destNode);
+  }
 
   const combinedStream = new MediaStream([
     ...canvasStream.getVideoTracks(),
@@ -510,10 +519,15 @@ export async function exportVideoWithBurnedSubtitles(params: {
   ]);
 
   const { mimeType, extension } = getPreferredMimeType();
-  const recorder = new MediaRecorder(combinedStream, {
-    mimeType,
-    videoBitsPerSecond: 4_500_000,
-  });
+  let recorder: MediaRecorder;
+  try {
+    recorder = new MediaRecorder(combinedStream, {
+      mimeType,
+      videoBitsPerSecond: 4_500_000,
+    });
+  } catch {
+    recorder = new MediaRecorder(combinedStream);
+  }
 
   const chunks: BlobPart[] = [];
   recorder.ondataavailable = (e) => {
@@ -538,6 +552,7 @@ export async function exportVideoWithBurnedSubtitles(params: {
     recorder.onstop = () => {
       signal?.removeEventListener('abort', handleAbort);
       cancelAnimationFrame(rafId);
+      noiseHandle?.dispose();
       audioCtx.close().catch(() => {});
       video.src = '';
       if (aborted) {
@@ -555,6 +570,7 @@ export async function exportVideoWithBurnedSubtitles(params: {
     recorder.onerror = () => {
       signal?.removeEventListener('abort', handleAbort);
       cancelAnimationFrame(rafId);
+      noiseHandle?.dispose();
       audioCtx.close().catch(() => {});
       reject(new Error('Erro durante a gravação do vídeo exportado.'));
     };
@@ -601,6 +617,7 @@ export async function exportVideoWithBurnedSubtitles(params: {
           rafId = requestAnimationFrame(renderLoop);
         })
         .catch((err) => {
+          aborted = true;
           if (recorder.state !== 'inactive') recorder.stop();
           reject(err);
         });

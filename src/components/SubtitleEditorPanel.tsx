@@ -165,12 +165,12 @@ export function SubtitleEditorPanel({
   const reviewWords = useMemo(() => getReviewWordsList(segments), [segments]);
 
   useEffect(() => {
-    if (reviewWords.length === 0) {
-      setActiveReviewIdx(0);
-    } else if (activeReviewIdx >= reviewWords.length) {
-      setActiveReviewIdx(reviewWords.length - 1);
-    }
-  }, [reviewWords.length, activeReviewIdx]);
+    setActiveReviewIdx((prev) => {
+      if (reviewWords.length === 0) return prev === 0 ? prev : 0;
+      if (prev >= reviewWords.length) return reviewWords.length - 1;
+      return prev;
+    });
+  }, [reviewWords.length]);
 
   const activeSegmentId = useMemo(() => {
     const found = segments.find(

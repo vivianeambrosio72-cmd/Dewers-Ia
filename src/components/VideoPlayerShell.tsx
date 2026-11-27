@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  AudioLines,
   Pause,
   Play,
   RefreshCw,
@@ -7,10 +8,33 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import type { StyleConfig, SubtitleSegment } from '../types';
+import type {
+  NoiseReductionConfig,
+  NoiseReductionLevel,
+  StyleConfig,
+  SubtitleSegment,
+} from '../types';
+import {
+  attachNoiseReductionChain,
+  type NoiseReductionGraphHandle,
+} from '../utils/audioNoiseReduction';
 import { formatTimeDisplay, getActiveWordChunk } from '../utils/subtitles';
 import { SubtitleOverlay } from './SubtitleOverlay';
 import { TimelineTracks } from './TimelineTracks';
+
+const videoNoiseGraphs = new WeakMap<
+  HTMLVideoElement,
+  { ctx: AudioContext; handle: NoiseReductionGraphHandle }
+>();
+
+const NOISE_LEVEL_OPTIONS: Array<{
+  value: NoiseReductionLevel;
+  label: string;
+}> = [
+  { value: 'light', label: 'Suave' },
+  { value: 'medium', label: 'Médio' },
+  { value: 'strong', label: 'Forte' },
+];
 
 interface VideoPlayerShellProps {
   step: 1 | 2;
@@ -33,6 +57,8 @@ interface VideoPlayerShellProps {
   onAddSubtitleAtPlayhead?: () => void;
   onResizeSegmentStart?: () => void;
   onResizeSegment?: (segmentId: string, nextStart: number, nextEnd: number) => void;
+  noiseReduction?: NoiseReductionConfig;
+  onNoiseReductionChange?: (next: NoiseReductionConfig) => void;
 }
 
 export function VideoPlayerShell({
@@ -56,20 +82,64 @@ export function VideoPlayerShell({
   onAddSubtitleAtPlayhead,
   onResizeSegmentStart,
   onResizeSegment,
+  noiseReduction = { enabled: false, level: 'medium' },
+  onNoiseReductionChange,
 }: VideoPlayerShellProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [videoRatio, setVideoRatio] = useState<number>(9 / 16);
   const [liveTime, setLiveTime] = useState(currentTime);
+  const onTimeSyncRef = useRef(onTimeSync);
+  const onClipPlaybackCompleteRef = useRef(onClipPlaybackComplete);
+  onTimeSyncRef.current = onTimeSync;
+  onClipPlaybackCompleteRef.current = onClipPlaybackComplete;
 
   useEffect(() => {
-    setLiveTime(currentTime);
-  }, [currentTime]);
+    if (!isPlaying) {
+      setLiveTime((prev) => (prev === currentTime ? prev : currentTime));
+    }
+  }, [currentTime, isPlaying]);
+
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid || !videoUrl) return;
+    let entry = videoNoiseGraphs.get(vid);
+    if (!entry && !noiseReduction.enabled) {
+      return;
+    }
+    if (!entry) {
+      try {
+        const AudioCtx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext })
+            .webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const source = ctx.createMediaElementSource(vid);
+        const handle = attachNoiseReductionChain(
+          ctx,
+          source,
+          ctx.destination,
+          noiseReduction,
+        );
+        entry = { ctx, handle };
+        videoNoiseGraphs.set(vid, entry);
+      } catch {
+        return;
+      }
+    } else {
+      entry.handle.updateConfig(noiseReduction);
+    }
+    if (isPlaying || noiseReduction.enabled) {
+      void entry.handle.resumeIfSuspended();
+    }
+  }, [noiseReduction, isPlaying, videoUrl, videoRef]);
 
   useEffect(() => {
     if (!isPlaying) return;
     let rafId = 0;
+    let lastCommittedTime = -1;
 
     const tick = () => {
       const vid = videoRef.current;
@@ -82,19 +152,23 @@ export function VideoPlayerShell({
           vid.pause();
           vid.currentTime = clipEndTime;
           setLiveTime(clipEndTime);
-          onTimeSync(clipEndTime);
-          onClipPlaybackComplete?.();
+          onTimeSyncRef.current(clipEndTime);
+          onClipPlaybackCompleteRef.current?.();
           return;
         }
-        setLiveTime(vid.currentTime);
-        onTimeSync(vid.currentTime);
+        const nextT = vid.currentTime;
+        if (Math.abs(nextT - lastCommittedTime) >= 0.001) {
+          lastCommittedTime = nextT;
+          setLiveTime(nextT);
+          onTimeSyncRef.current(nextT);
+        }
       }
       rafId = requestAnimationFrame(tick);
     };
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [isPlaying, clipEndTime, videoRef, onTimeSync, onClipPlaybackComplete]);
+  }, [isPlaying, clipEndTime, videoRef]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -190,7 +264,13 @@ export function VideoPlayerShell({
                   muted={isMuted}
                   playsInline
                   onClick={onTogglePlay}
-                  onPlay={() => onPlayStateChange(true)}
+                  onPlay={(e) => {
+                    const entry = videoNoiseGraphs.get(e.currentTarget);
+                    if (entry) {
+                      void entry.handle.resumeIfSuspended();
+                    }
+                    onPlayStateChange(true);
+                  }}
                   onPause={() => onPlayStateChange(false)}
                   onEnded={() => onPlayStateChange(false)}
                   onLoadedMetadata={(e) => {
@@ -280,6 +360,87 @@ export function VideoPlayerShell({
                 </button>
               )}
             </div>
+
+            {onNoiseReductionChange && (
+              <div className="pt-3 border-t border-white/[0.07] flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div
+                    className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 transition-colors ${
+                      noiseReduction.enabled
+                        ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'
+                        : 'bg-[#181C27] border-white/10 text-slate-400'
+                    }`}
+                  >
+                    <AudioLines className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-100">
+                      Reduzir ruído do vídeo
+                    </p>
+                    <p className="text-[11px] text-slate-400 truncate">
+                      Suaviza chiado, vento e ruído de fundo na prévia, transcrição e exportação
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {noiseReduction.enabled && (
+                    <div
+                      role="group"
+                      aria-label="Intensidade da redução de ruído"
+                      className="inline-flex items-center rounded-lg bg-[#090B10] border border-white/10 p-0.5"
+                    >
+                      {NOISE_LEVEL_OPTIONS.map((opt) => {
+                        const active = noiseReduction.level === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() =>
+                              onNoiseReductionChange({
+                                ...noiseReduction,
+                                level: opt.value,
+                              })
+                            }
+                            className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                              active
+                                ? 'bg-amber-400 text-slate-950'
+                                : 'text-slate-300 hover:text-white'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={noiseReduction.enabled}
+                    onClick={() =>
+                      onNoiseReductionChange({
+                        ...noiseReduction,
+                        enabled: !noiseReduction.enabled,
+                      })
+                    }
+                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap ${
+                      noiseReduction.enabled
+                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/25'
+                        : 'bg-[#181C27] border-white/10 text-slate-300 hover:bg-white/10'
+                    }`}
+                  >
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        noiseReduction.enabled ? 'bg-emerald-400' : 'bg-slate-500'
+                      }`}
+                    />
+                    {noiseReduction.enabled ? 'Ativado' : 'Desativado'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <TimelineTracks
